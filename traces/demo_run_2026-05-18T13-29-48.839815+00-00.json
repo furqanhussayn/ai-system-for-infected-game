@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T13:29:48.839815+00:00", "matchId": "DEMO_GROQ_SAFE", "botId": "player_2", "action": "decide_action_early", "decision": "stealth_fake_task", "trace": "Early wave. Bot should fake tasks and avoid obvious aggression.", "source": "/demo/run"}

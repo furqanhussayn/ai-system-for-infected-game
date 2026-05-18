@@ -1,0 +1,1 @@
+{"ts": "2026-05-18T11:12:57.339258", "event": "respond", "matchId": "ROOM123", "input": {"matchId": "ROOM123", "botId": "player_2", "message": "player_2 is sus", "recentChat": [{"sender": "player_1", "text": "player 2 is sus"}], "alivePlayers": ["player_1", "player_2", "player_3", "player_4"], "infectedPlayers": ["player_2"]}, "output": {"messages": ["i agree with u"]}}

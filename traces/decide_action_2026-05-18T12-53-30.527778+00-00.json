@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T12:53:30.527778+00:00", "matchId": "DEMO_GROQ_SAFE", "botId": "player_2", "action": "decide_action", "decision": "final_hunt", "trace": "Mode: final_hunt chosen by rule engine.", "source": "/decide_action"}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T12:53:30.597020+00:00", "matchId": "DEMO_ROOM", "botId": "player_2", "action": "decide_action", "decision": "aggressive_chase", "trace": "Mode: aggressive_chase chosen by rule engine.", "source": "/decide_action"}

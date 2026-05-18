@@ -1,0 +1,87 @@
+from fastapi import APIRouter
+from src.models.schemas import DecideRequest, DecideActionResponse
+from src.agents.behavior_director import BehaviorDirector
+from src.agents.agentic_decision_engine import validate_decide_behavior_with_agent
+from src.agents.trace_logger import add_trace
+from src.core import config
+from src.core.state import get_bot_state
+
+router = APIRouter()
+behavior = BehaviorDirector()
+
+
+def _rule_based_decision(req: DecideRequest) -> tuple[dict, str]:
+    infected_count = len(req.infectedPlayers)
+    human_count = len(req.humanPlayers)
+    bot_state = get_bot_state(req.matchId, req.botId) or {}
+
+    if len(req.humanPlayers) == 1:
+        mode = "final_hunt"
+    elif infected_count >= human_count:
+        mode = "aggressive_chase"
+    elif req.wave <= 1:
+        mode = "stealth_fake_task"
+    else:
+        mode = "stalk"
+
+    target_room = req.botRoom or bot_state.get("botRoom")
+    should_chase = mode in ("final_hunt", "aggressive_chase")
+    trace_text = ""
+    if mode == "stealth_fake_task":
+        trace_text = "Early wave. Bot should fake tasks and avoid obvious aggression."
+    elif mode == "stalk":
+        trace_text = "Mid game: bot should stalk nearby humans."
+    else:
+        trace_text = f"Mode: {mode} chosen by rule engine."
+
+    decision = {
+        "botId": req.botId,
+        "behaviorMode": mode,
+        "targetRoom": target_room,
+        "targetPlayer": None,
+        "shouldChase": should_chase,
+        "trace": trace_text,
+    }
+    return decision, trace_text
+
+
+@router.post("", response_model=DecideActionResponse)
+async def decide(req: DecideRequest):
+    agent_decision, validation_error = await validate_decide_behavior_with_agent(req)
+    if agent_decision is not None:
+        decision = {
+            "botId": req.botId,
+            **agent_decision,
+            "trace": agent_decision["reason"],
+        }
+        add_trace(
+            req.matchId,
+            req.botId,
+            "decide_action",
+            agent_decision["behaviorMode"],
+            agent_decision["reason"],
+            "/decide_action:agent",
+        )
+        return decision
+
+    if config.AI_MODE == "agent" and validation_error:
+        add_trace(
+            req.matchId,
+            req.botId,
+            "agent_decide_action_failed",
+            "rules_fallback",
+            validation_error,
+            "/decide_action:agent_validation_failed",
+        )
+
+    decision, trace_text = _rule_based_decision(req)
+    trace_source = "/decide_action:rules_fallback" if config.AI_MODE == "agent" else "/decide_action"
+    add_trace(
+        req.matchId,
+        req.botId,
+        "decide_action",
+        decision["behaviorMode"],
+        trace_text,
+        trace_source,
+    )
+    return decision

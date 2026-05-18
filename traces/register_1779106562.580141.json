@@ -1,0 +1,1 @@
+{"ts": "2026-05-18T12:16:02.580141+00:00", "event": "register", "matchId": "ROOM123", "input": {"matchId": "ROOM123", "botId": "player_2", "wave": 1, "alivePlayers": ["player_1", "player_2", "player_3", "player_4"], "infectedPlayers": ["player_2"]}, "output": {"personality": "panicker", "behaviorMode": "stealth_fake_task"}}
