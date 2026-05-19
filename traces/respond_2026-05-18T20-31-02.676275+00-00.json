@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:31:02.676275+00:00", "matchId": "FRESH_fcba3f24", "botId": "player_2", "action": "respond", "decision": "why u so mad??", "trace": "classification=insult | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1550]", "source": "/respond"}

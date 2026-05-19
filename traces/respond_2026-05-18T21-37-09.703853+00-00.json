@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:09.703853+00:00", "matchId": "FRESH_2e4affc6", "botId": "player_2", "action": "respond", "decision": "nah vote player 3 he started this | wtf yall", "trace": "classification=vote_bot | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[2052, 1169]", "source": "/respond"}

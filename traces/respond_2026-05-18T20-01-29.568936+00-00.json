@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:01:29.568936+00:00", "matchId": "FRESH_bb7488c9", "botId": "player_2", "action": "respond", "decision": "ur saying that cuz i typed normal??", "trace": "classification=called_bot_or_real | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[2176]", "source": "/respond"}

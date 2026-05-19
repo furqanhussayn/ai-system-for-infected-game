@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:09.615115+00:00", "matchId": "FRESH_e5ba4f64", "botId": "player_2", "action": "respond", "decision": "lowkey i dont trust player 3", "trace": "classification=generic | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[2762]", "source": "/respond"}

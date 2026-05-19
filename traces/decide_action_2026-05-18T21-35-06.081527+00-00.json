@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:35:06.081527+00:00", "matchId": "RULES_NO_LLM", "botId": "player_2", "action": "decide_action", "decision": "stealth_fake_task", "trace": "Early wave. Bot should fake tasks and avoid obvious aggression.", "source": "/decide_action"}

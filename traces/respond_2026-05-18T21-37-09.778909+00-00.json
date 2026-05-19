@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:09.778909+00:00", "matchId": "TWO_DELAYS_TEST", "botId": "player_2", "action": "respond", "decision": "bro what?? | why me tho", "trace": "classification=direct_accusation | message_count=2 | llm_used=True | fallback_used=False | delaysMs=[1219, 1147]", "source": "/respond"}

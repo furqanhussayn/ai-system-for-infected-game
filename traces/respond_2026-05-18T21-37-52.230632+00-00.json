@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:52.230632+00:00", "matchId": "TRACE_META_TEST", "botId": "player_2", "action": "respond", "decision": "bro i didnt even do anything | u have no proof", "trace": "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1816, 998]", "source": "/respond"}

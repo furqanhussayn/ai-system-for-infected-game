@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:01:03.805004+00:00", "matchId": "FRESH_a003ae5b", "botId": "player_2", "action": "respond", "decision": "no need to cry about it", "trace": "classification=insult | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1682]", "source": "/respond"}

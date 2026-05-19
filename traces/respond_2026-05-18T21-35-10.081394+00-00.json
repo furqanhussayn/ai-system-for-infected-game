@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:35:10.081394+00:00", "matchId": "FRESH_f0b32ae1", "botId": "player_2", "action": "respond", "decision": "why u pushing me so hard?? | u have no proof", "trace": "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1909, 1164]", "source": "/respond"}

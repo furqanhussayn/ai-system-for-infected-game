@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:09.654172+00:00", "matchId": "FRESH_a9ad4819", "botId": "player_2", "action": "respond", "decision": "player 1 accusing way too fast ngl | u have no proof", "trace": "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[2163, 1002]", "source": "/respond"}

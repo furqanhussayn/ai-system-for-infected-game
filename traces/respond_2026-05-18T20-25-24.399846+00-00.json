@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:25:24.399846+00:00", "matchId": "FRESH_51ad35a8", "botId": "player_2", "action": "respond", "decision": "player 1 pushing way too fast", "trace": "classification=vote_bot | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1960]", "source": "/respond"}
