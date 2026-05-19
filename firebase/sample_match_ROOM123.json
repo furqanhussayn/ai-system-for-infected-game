@@ -1,0 +1,63 @@
+{
+  "matches": {
+    "ROOM123": {
+      "meta": {
+        "matchId": "ROOM123",
+        "contractVersion": "v4",
+        "phase": "Lobby",
+        "wave": 1,
+        "cycle": 1
+      },
+      "state": {
+        "phase": "Lobby",
+        "wave": 1,
+        "cycle": 1,
+        "taskProgress": 0,
+        "activeBots": ["player_2"],
+        "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+        "humanPlayers": ["player_1", "player_3", "player_4"],
+        "infectedPlayers": ["player_2"]
+      },
+      "players": {
+        "player_1": {
+          "playerId": "player_1",
+          "displayName": "Player 1",
+          "role": "human",
+          "alive": true
+        },
+        "player_2": {
+          "playerId": "player_2",
+          "displayName": "Player 2",
+          "role": "infected",
+          "alive": true
+        },
+        "player_3": {
+          "playerId": "player_3",
+          "displayName": "Player 3",
+          "role": "human",
+          "alive": true
+        },
+        "player_4": {
+          "playerId": "player_4",
+          "displayName": "Player 4",
+          "role": "human",
+          "alive": true
+        }
+      },
+      "tasks": {
+        "wire_1": { "taskId": "wire_1", "status": "pending" },
+        "wire_2": { "taskId": "wire_2", "status": "pending" },
+        "wire_3": { "taskId": "wire_3", "status": "pending" },
+        "wire_4": { "taskId": "wire_4", "status": "pending" },
+        "wire_5": { "taskId": "wire_5", "status": "pending" },
+        "wire_6": { "taskId": "wire_6", "status": "pending" },
+        "wire_7": { "taskId": "wire_7", "status": "pending" },
+        "exit_scan": { "taskId": "exit_scan", "status": "pending" }
+      },
+      "taskQueue": ["wire_1", "wire_2", "wire_3", "wire_4", "wire_5", "wire_6", "wire_7", "exit_scan"],
+      "chat": [],
+      "votes": [],
+      "events": []
+    }
+  }
+}

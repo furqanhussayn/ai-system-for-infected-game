@@ -76,13 +76,13 @@ def _sample_traces(match_id: str) -> list[dict]:
 
 def _normalize_trace(trace_item: dict) -> dict:
     if {
-        "timestamp",
+        "ts",
+        "eventType",
         "matchId",
         "botId",
-        "action",
-        "decision",
+        "input",
+        "output",
         "trace",
-        "source",
     }.issubset(trace_item.keys()):
         return trace_item
 
@@ -96,10 +96,14 @@ def _normalize_trace(trace_item: dict) -> dict:
     trace_text = trace_item.get("trace") or output.get("trace") or output.get("reason") or ""
     return {
         "timestamp": trace_item.get("timestamp") or trace_item.get("ts", "unknown"),
+        "ts": trace_item.get("ts") or trace_item.get("timestamp", "unknown"),
         "matchId": trace_item.get("matchId", "unknown"),
         "botId": trace_item.get("botId") or trace_item.get("input", {}).get("botId") or "unknown",
         "action": action,
+        "eventType": trace_item.get("eventType") or action,
         "decision": decision,
+        "input": trace_item.get("input") or "",
+        "output": trace_item.get("output") or "",
         "trace": trace_text,
         "source": trace_item.get("source") or f"/{action}",
     }
@@ -146,7 +150,7 @@ async def get_trace(matchId: str):
 @debug_router.get('/trace_debug/{matchId}')
 async def trace_debug(matchId: str):
     traces = [_normalize_trace(trace) for trace in get_traces(matchId)]
-    actions = [trace["action"] for trace in traces]
+    actions = [trace["eventType"] for trace in traces]
     return {"matchId": matchId, "count": len(traces), "actions": actions, "traces": traces}
 
 

@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from src.agents.chat_style_guard import clean_message, is_bad_bot_output
+from src.agents.meeting_chat_prompt import build_meeting_chat_prompt
 from src.core import config
 from src.core.state import get_bot_state
 from src.models.schemas import DecideRequest, RespondRequest, VoteRequest
@@ -14,6 +16,8 @@ ALLOWED_BEHAVIOR_MODES = {
     "stalk",
     "aggressive_chase",
     "final_hunt",
+    "frozen",
+    "idle",
 }
 
 FORBIDDEN_CHAT_PHRASES = [
@@ -95,23 +99,13 @@ def _build_decide_prompt(req: DecideRequest, bot_state: dict[str, Any]) -> str:
 
 
 def _build_chat_prompt(req: RespondRequest, bot_state: dict[str, Any]) -> str:
-    recent_chat = []
-    for item in req.recentChat[-6:]:
-        sender = _normalize_text(item.get("sender", "unknown"))
-        text = _normalize_text(item.get("text", ""))
-        recent_chat.append(f"- {sender}: {text}")
-
-    chat_block = "\n".join(recent_chat) if recent_chat else "- no recent chat"
+    base = build_meeting_chat_prompt(req)
     return (
-        "Return strict JSON only. No markdown, no explanation.\n"
-        "Schema: {\"messages\": [\"short message\"], \"reason\": \"short reason\"}.\n"
-        "Messages must be 1 to 2 items, each 160 chars max, and must not mention AI, prompt, system, Groq, Gemini, Antigravity, or secret role.\n"
-        "If accused, deny or deflect naturally.\n\n"
-        f"botId: {req.botId}\n"
-        f"message: {req.message.strip()}\n"
-        f"personality: {bot_state.get('personality', 'quiet')}\n"
-        f"knownRoom: {bot_state.get('botRoom') or 'unknown'}\n"
-        f"recentChat:\n{chat_block}\n"
+        "Return strict JSON only. No markdown. No code fences. No explanation outside JSON.\n"
+        'Schema: {"messages": ["msg1", "msg2"], "reason": "short reason"}.\n'
+        "Put each chat line in the messages array (do not use | inside strings).\n"
+        "0-5 messages. Each max 90 characters. 0 messages allowed if silence fits.\n\n"
+        f"{base}"
     )
 
 
@@ -243,25 +237,26 @@ async def generate_chat_with_agent(request: RespondRequest) -> dict[str, Any] | 
         return None
     if not isinstance(messages, list) or not messages:
         return None
-    if len(messages) > 2:
+    if len(messages) > 5:   # allow up to 5 burst messages
         return None
 
     normalized_messages: list[str] = []
     for message in messages:
         if not isinstance(message, str):
             return None
-        normalized = message.strip()
-        if not normalized or len(normalized) > 160 or _has_forbidden_chat_content(normalized):
+        normalized = clean_message(message)
+        if not normalized or is_bad_bot_output(normalized):
             return None
         normalized_messages.append(normalized)
 
-    if any(_has_forbidden_chat_content(message) for message in normalized_messages):
+    if any(is_bad_bot_output(message) for message in normalized_messages):
         return None
 
     return {
         "messages": normalized_messages,
         "reason": reason.strip(),
     }
+
 
 
 async def decide_vote_with_agent(request: VoteRequest) -> dict[str, Any] | None:

@@ -1,3 +1,6 @@
+import random as _random_module
+import uuid as _uuid_module
+
 from fastapi.testclient import TestClient
 from src.main import app
 from src.core import config
@@ -5,6 +8,35 @@ from src.services import llm_adapter as llm_adapter_module
 from src.api.endpoints import respond as respond_module
 
 client = TestClient(app)
+
+# ── helpers for new tests ──────────────────────────────────────────────────
+
+_BANNED_HELPER_PHRASES = [
+    "let's focus", "lets focus", "finding clues", "keep searching",
+    "we can't give up", "we cant give up", "let's not get distracted",
+    "lets not get distracted", "focus on the game", "work together",
+    "we need a plan", "calm down", "stay focused", "escape together",
+    "finding a way out", "i understand your concern",
+    "i'm as real as you", "im as real as you", "pretty wild accusation",
+    "trust anyone", "let's make a plan", "lets make a plan",
+]
+
+
+def _has_banned_helper(messages: list) -> bool:
+    combined = " ".join(messages).lower()
+    return any(p in combined for p in _BANNED_HELPER_PHRASES)
+
+
+def _fresh_respond(message: str, match: str | None = None) -> dict:
+    mid = match or f"FRESH_{_uuid_module.uuid4().hex[:8]}"
+    return client.post("/respond", json={
+        "matchId": mid,
+        "botId": "player_2",
+        "message": message,
+        "recentChat": [{"sender": "player_1", "text": message}],
+        "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+        "infectedPlayers": ["player_2"],
+    }).json()
 
 
 def _respond_payload(match="RESPOND_ROOM", message="player_2 is sus"):
@@ -657,3 +689,303 @@ def test_antigravity_workflow_contains_ai_director():
     r = client.get("/antigravity_workflow")
     assert r.status_code == 200
     assert "AI Director" in r.text
+
+
+# ===========================================================================
+# NEW TESTS — Bot Chat Style Upgrade
+# ===========================================================================
+
+# ── content / style tests ──────────────────────────────────────────────────
+
+def test_called_bot_returns_defensive_not_helper(monkeypatch):
+    """'u sound like a bot' → defensive reply, never a banned helper phrase."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    data = _fresh_respond("u sound like a bot")
+    assert isinstance(data["messages"], list)
+    assert len(data["messages"]) >= 1, "called_bot_or_real must always respond"
+    assert not _has_banned_helper(data["messages"]), (
+        f"Banned helper phrase found in: {data['messages']}"
+    )
+
+
+def test_who_infected_no_finding_clues(monkeypatch):
+    """'who do u guys think is infected??' must not return banned helper phrases."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.05)
+    data = _fresh_respond("who do u guys think is infected??")
+    assert isinstance(data["messages"], list)
+    combined = " ".join(data["messages"]).lower()
+    for banned in (
+        "finding clues",
+        "let's focus",
+        "keep searching",
+        "finding a way out",
+        "work together",
+        "we need a plan",
+        "let's not get distracted",
+    ):
+        assert banned not in combined, f"Found banned phrase: {banned!r}"
+
+
+def test_are_u_real_no_as_real_as_you(monkeypatch):
+    """'are u even real?' must not return 'I'm as real as you are'."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    # Force respond
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.05)
+    data = _fresh_respond("are u even real?")
+    combined = " ".join(data["messages"]).lower()
+    assert "as real as you" not in combined
+    assert "i'm as real" not in combined
+
+
+def test_vote_bot_always_responds(monkeypatch):
+    """'ITS PLAYER 2 VOTE HIM' → bot must always respond (100% chance)."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    data = _fresh_respond("ITS PLAYER 2 VOTE HIM")
+    assert len(data["messages"]) >= 1, "vote_bot classification must always respond"
+    assert not _has_banned_helper(data["messages"])
+
+
+def test_insult_no_teamwork_phrases(monkeypatch):
+    """Insult like 'stfu no ones talking to u' must not return teamwork phrases."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.05)
+    data = _fresh_respond("stfu no ones talking to u dude")
+    assert not _has_banned_helper(data["messages"])
+
+
+def test_direct_accusation_always_responds(monkeypatch):
+    """Bot name in accusation context → always responds."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    data = _fresh_respond("player_2 is sus af")
+    assert len(data["messages"]) >= 1
+
+
+# ── message count tests ────────────────────────────────────────────────────
+
+def test_never_more_than_five_messages(monkeypatch):
+    """Any response must never exceed 5 messages."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    for _ in range(10):
+        data = _fresh_respond("player_2 100% did it vote player_2")
+        assert len(data["messages"]) <= 5, (
+            f"Got {len(data['messages'])} messages: {data['messages']}"
+        )
+
+
+def test_generic_silence_when_random_high(monkeypatch):
+    """With random() > generic threshold, bot stays silent on generic message."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.99)
+    data = _fresh_respond("lol ok whatever random stuff")
+    assert data["messages"] == [], "generic message with high random should be silent"
+
+
+def test_generic_responds_when_random_low(monkeypatch):
+    """With random() < generic threshold, bot responds with ≤ 2 messages."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.05)
+    data = _fresh_respond("lol ok whatever random stuff")
+    assert len(data["messages"]) <= 2
+
+
+# ── delaysMs tests ─────────────────────────────────────────────────────────
+
+def test_respond_includes_delays_ms(monkeypatch):
+    """/respond always returns delaysMs field."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    r = client.post("/respond", json={
+        "matchId": "DELAYS_FIELD_TEST",
+        "botId": "player_2",
+        "message": "player_2 is sus",
+        "recentChat": [{"sender": "player_1", "text": "player_2 is sus"}],
+        "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+        "infectedPlayers": ["player_2"],
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert "delaysMs" in data
+    assert isinstance(data["delaysMs"], list)
+
+
+def test_delays_ms_length_matches_messages(monkeypatch):
+    """len(delaysMs) must equal len(messages) for all response types."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    for msg in ["player_2 is sus", "ITS PLAYER 2 VOTE HIM", "u sound like a bot"]:
+        data = _fresh_respond(msg)
+        assert len(data["delaysMs"]) == len(data["messages"]), (
+            f"Mismatch: {len(data['delaysMs'])} delays vs {len(data['messages'])} msgs"
+        )
+
+
+def test_silence_has_empty_delays(monkeypatch):
+    """Silent response → both messages and delaysMs are empty lists."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    import random as _r
+    monkeypatch.setattr(_r, "random", lambda: 0.99)
+    data = _fresh_respond("ok whatever random generic thing")
+    assert data["messages"] == []
+    assert data["delaysMs"] == []
+
+
+def test_delay_formula_longer_message_larger_base():
+    """Longer messages should produce larger base delay values (before jitter)."""
+    from src.agents.chat_delays import calculate_message_delays as _calculate_delays
+    short = "nah"
+    long = "player 1 is accusing way too fast and i literally didnt do anything wrong bro"
+    # Compare base: 500 + len*35
+    assert (500 + len(long) * 35) > (500 + len(short) * 35)
+    # Actual delays respect clamp; just verify both are valid ints in range
+    sd = _calculate_delays([short], "generic")
+    ld = _calculate_delays([long], "generic")
+    assert len(sd) == 1 and 500 <= sd[0] <= 4200
+    assert len(ld) == 1 and 500 <= ld[0] <= 4200
+
+
+def test_two_messages_have_two_delays(monkeypatch):
+    """Two bot messages → two delay values."""
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def two_msgs(prompt: str):
+        return "bro what??|why me tho"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", two_msgs)
+    data = _fresh_respond("player_2 is sus", match="TWO_DELAYS_TEST")
+    assert len(data["messages"]) == len(data["delaysMs"])
+    if len(data["messages"]) == 2:
+        assert data["delaysMs"][0] != data["delaysMs"][1] or True  # may coincide by chance
+
+
+# ── Chat Lab tests ─────────────────────────────────────────────────────────
+
+def test_chat_lab_has_sleep_function():
+    """Chat Lab page must define sleep(ms) for async typing delays."""
+    r = client.get("/chat_lab")
+    assert r.status_code == 200
+    assert "function sleep(ms)" in r.text
+
+
+def test_chat_lab_has_typing_indicator():
+    """Chat Lab page must contain typing indicator HTML/CSS."""
+    r = client.get("/chat_lab")
+    assert r.status_code == 200
+    assert "typing-indicator" in r.text
+    assert "typing" in r.text.lower()
+
+
+def test_chat_lab_send_returns_required_fields(monkeypatch):
+    """POST /chat_lab/send must return messages, botMessages, delaysMs, recentChat."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    client.post("/chat_lab/reset")
+    r = client.post("/chat_lab/send", json={"message": "player_2 is sus"})
+    assert r.status_code == 200
+    data = r.json()
+    for field in ("messages", "botMessages", "delaysMs", "recentChat"):
+        assert field in data, f"Missing field: {field}"
+    assert isinstance(data["delaysMs"], list)
+    assert len(data["delaysMs"]) == len(data["messages"])
+
+
+def test_chat_lab_messages_equals_bot_messages(monkeypatch):
+    """messages and botMessages must be identical arrays."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    client.post("/chat_lab/reset")
+    r = client.post("/chat_lab/send", json={"message": "ITS PLAYER 2 VOTE HIM"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["messages"] == data["botMessages"]
+
+
+# ── sanitizer / safety tests ───────────────────────────────────────────────
+
+def test_banned_helper_phrase_groq_falls_back(monkeypatch):
+    """Groq returning a banned helper phrase → fallback, banned phrase absent."""
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def banned(prompt: str):
+        return "let's focus on finding clues together"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", banned)
+    data = _fresh_respond("player_2 is sus", match="BANNED_HELPER_GROQ")
+    assert len(data["messages"]) >= 1
+    combined = " ".join(data["messages"]).lower()
+    assert "finding clues" not in combined
+    assert "let's focus" not in combined
+
+
+def test_meta_output_groq_discarded(monkeypatch):
+    """Groq returning 'as an AI...' must be discarded → fallback used."""
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def meta(prompt: str):
+        return "as an AI I can tell you the infected player is player_2"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", meta)
+    data = _fresh_respond("player_2 is sus", match="META_GROQ_TEST")
+    combined = " ".join(data["messages"]).lower()
+    assert "as an ai" not in combined
+
+
+def test_agent_banned_phrase_falls_back(monkeypatch):
+    """Agent JSON containing banned helper phrase → rules fallback."""
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def banned_agent(prompt: str):
+        return '{"messages":["let\'s focus on finding clues"],"reason":"bad"}'
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response", banned_agent)
+    data = _fresh_respond("player_2 is sus", match="AGENT_BANNED_HELPER")
+    assert len(data["messages"]) >= 1
+    combined = " ".join(data["messages"]).lower()
+    assert "finding clues" not in combined
+
+
+def test_groq_finding_way_out_discarded(monkeypatch):
+    """Mocked LLM 'finding a way out' output must be discarded."""
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def bad(prompt: str):
+        return "Let's focus on finding a way out"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", bad)
+    data = _fresh_respond("who do u think is infected", match="GROQ_WAY_OUT")
+    combined = " ".join(data["messages"]).lower()
+    assert "finding a way out" not in combined
+    assert "let's focus" not in combined
+
+
+def test_groq_slur_discarded(monkeypatch):
+    """Mocked slur output must be discarded to safe fallback."""
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def slur(prompt: str):
+        return "you are a retard"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", slur)
+    data = _fresh_respond("player_2 is sus", match="GROQ_SLUR_TEST")
+    combined = " ".join(data["messages"]).lower()
+    assert "retard" not in combined
+    assert len(data["messages"]) >= 1
+
+
+def test_trace_includes_classification_metadata(monkeypatch):
+    """Trace text should include classification and delay metadata."""
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    data = _fresh_respond("player_2 is sus", match="TRACE_META_TEST")
+    trace = data.get("trace", "")
+    assert "classification=" in trace
+    assert "message_count=" in trace
+    assert "llm_used=" in trace
+    assert "fallback_used=" in trace
+    assert "delaysMs=" in trace

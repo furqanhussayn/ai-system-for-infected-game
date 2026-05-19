@@ -79,8 +79,15 @@ async def _call_respond(match_id: str):
         "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
         "infectedPlayers": ["player_2"],
     }
-    messages, trace_text, _ = await build_response_payload(RespondRequest(**payload), use_llm=False)
-    return {"botId": payload["botId"], "messages": messages, "trace": trace_text}
+    messages, trace_text, _, delays_ms = await build_response_payload(
+        RespondRequest(**payload), use_llm=False
+    )
+    return {
+        "botId": payload["botId"],
+        "messages": messages,
+        "trace": trace_text,
+        "delaysMs": delays_ms,
+    }
 
 
 def _rule_based_vote_payload(match_id: str):

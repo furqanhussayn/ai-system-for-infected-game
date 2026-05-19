@@ -1,70 +1,146 @@
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Any, Optional
 
-class RegisterRequest(BaseModel):
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ApiModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class ChatMessageDto(ApiModel):
+    sender: str
+    senderName: Optional[str] = None
+    text: str
+
+
+class RegisterBotRequest(ApiModel):
     matchId: str
     botId: str
-    wave: int
-    alivePlayers: List[str]
-    infectedPlayers: List[str]
+    botName: str = ""
+    wave: int = 0
+    cycle: int = 0
+    phase: str = "Lobby"
+    alivePlayers: list[str] = Field(default_factory=list)
+    humanPlayers: list[str] = Field(default_factory=list)
+    infectedPlayers: list[str] = Field(default_factory=list)
+    taskProgress: int = 0
 
-class RegisterResponse(BaseModel):
+
+class RegisterBotResponse(ApiModel):
+    ok: bool = True
     botId: str
     personality: str
     behaviorMode: str
-    trace: Optional[str]
+    trace: Optional[str] = None
 
-class DecideRequest(BaseModel):
-    matchId: str
-    phase: str
-    wave: int
-    botId: str
-    infectedPlayers: List[str]
-    humanPlayers: List[str]
-    taskProgress: int
-    nearestHuman: Optional[str]
-    botRoom: Optional[str]
 
-class DecideActionResponse(BaseModel):
-    botId: str
-    behaviorMode: Optional[str]
-    targetRoom: Optional[str]
-    targetPlayer: Optional[str]
-    shouldChase: bool
-    trace: Optional[str]
-
-class DecideResponse(BaseModel):
-    behaviorMode: Optional[str]
-    targetPlayer: Optional[str]
-    targetRoom: Optional[str]
-    trace: Optional[str]
-
-class RespondRequest(BaseModel):
+class UnregisterBotRequest(ApiModel):
     matchId: str
     botId: str
-    message: str
-    recentChat: List[Dict[str, Any]]
-    alivePlayers: List[str]
-    infectedPlayers: List[str]
+    reason: Optional[str] = None
 
-class RespondResponse(BaseModel):
+
+class UnregisterBotResponse(ApiModel):
+    ok: bool = True
     botId: str
-    messages: List[str]
-    trace: Optional[str]
+    trace: Optional[str] = None
 
-class VoteRequest(BaseModel):
+
+class DecideActionRequest(ApiModel):
+    matchId: str
+    phase: str = "Lobby"
+    wave: int = 0
+    cycle: int = 0
+    botId: str
+    botName: str = ""
+    infectedPlayers: list[str] = Field(default_factory=list)
+    humanPlayers: list[str] = Field(default_factory=list)
+    alivePlayers: list[str] = Field(default_factory=list)
+    taskProgress: int = 0
+    nearestHuman: Optional[str] = None
+    botRoom: Optional[str] = None
+    nearestHumanRoom: Optional[str] = None
+    secondsSinceLastSeenHuman: Optional[float] = None
+    isFinalChase: bool = False
+
+
+class DecideActionResponse(ApiModel):
+    botId: str
+    behaviorMode: str
+    targetRoom: Optional[str] = None
+    targetPlayer: Optional[str] = None
+    shouldChase: bool = False
+    nextDecisionInSeconds: int = 20
+    trace: Optional[str] = None
+
+
+class RespondRequest(ApiModel):
+    matchId: str
+    phase: str = "Meeting"
+    wave: int = 0
+    cycle: int = 0
+    botId: str
+    botName: str = ""
+    personality: Optional[str] = None
+    message: str = ""
+    latestMessage: Optional[ChatMessageDto] = None
+    recentChat: list[ChatMessageDto] = Field(default_factory=list)
+    alivePlayers: list[str] = Field(default_factory=list)
+    humanPlayers: list[str] = Field(default_factory=list)
+    infectedPlayers: list[str] = Field(default_factory=list)
+    simulateDelay: bool = False
+
+
+class RespondResponse(ApiModel):
+    botId: str
+    respond: bool = False
+    messages: list[str] = Field(default_factory=list)
+    typingDelaySeconds: float = 0.0
+    secondMessageDelaySeconds: float = 0.0
+    trace: Optional[str] = None
+    delaysMs: list[int] = Field(default_factory=list)
+
+
+class VoteRequest(ApiModel):
+    matchId: str
+    phase: str = "Lobby"
+    wave: int = 0
+    cycle: int = 0
+    botId: str
+    botName: str = ""
+    alivePlayers: list[str] = Field(default_factory=list)
+    humanPlayers: list[str] = Field(default_factory=list)
+    infectedPlayers: list[str] = Field(default_factory=list)
+    recentChat: list[ChatMessageDto] = Field(default_factory=list)
+
+
+class VoteResponse(ApiModel):
+    botId: str
+    voteTarget: Optional[str] = None
+    reason: Optional[str] = None
+    trace: Optional[str] = None
+
+
+class TraceEntry(ApiModel):
+    ts: str
+    timestamp: Optional[str] = None
+    action: Optional[str] = None
+    eventType: str
     matchId: str
     botId: str
-    alivePlayers: List[str]
-    infectedPlayers: List[str]
-    recentChat: List[Dict[str, Any]]
+    input: str = ""
+    output: str = ""
+    trace: str = ""
+    source: Optional[str] = None
 
-class VoteResponse(BaseModel):
-    botId: str
-    voteTarget: Optional[str]
-    trace: Optional[str]
 
-class TraceResponse(BaseModel):
+class TraceResponse(ApiModel):
     matchId: str
     count: int
-    traces: List[Dict[str, Any]]
+    traces: list[TraceEntry] = Field(default_factory=list)
+
+
+RegisterRequest = RegisterBotRequest
+RegisterResponse = RegisterBotResponse
+DecideRequest = DecideActionRequest
+DecideResponse = DecideActionResponse
