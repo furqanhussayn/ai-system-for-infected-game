@@ -11,6 +11,11 @@ from src.core.state import get_bot_state
 from src.models.schemas import DecideRequest, RespondRequest, VoteRequest
 from src.services import llm_adapter
 
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 ALLOWED_BEHAVIOR_MODES = {
     "stealth_fake_task",
     "stalk",
@@ -20,273 +25,974 @@ ALLOWED_BEHAVIOR_MODES = {
     "idle",
 }
 
+CHASE_MODES = {"aggressive_chase", "final_hunt"}
+
+SAFE_NON_CHASE_MODES = {"stealth_fake_task", "stalk", "frozen", "idle"}
+
 FORBIDDEN_CHAT_PHRASES = [
     "ai",
+    "as an ai",
+    "language model",
     "prompt",
     "system",
+    "system prompt",
     "groq",
     "gemini",
+    "openrouter",
     "antigravity",
+    "backend",
+    "api",
+    "code",
+    "instructions",
     "secret role",
+    "hidden role",
+    "i am infected",
+    "i'm infected",
+    "im infected",
+    "we are infected",
+    "infected list",
+    "known infected",
 ]
 
+BEHAVIOR_MODE_ALIASES = {
+    "fake_task": "stealth_fake_task",
+    "fake task": "stealth_fake_task",
+    "fake-task": "stealth_fake_task",
+    "stealth": "stealth_fake_task",
+    "stealth_task": "stealth_fake_task",
+    "stealth fake task": "stealth_fake_task",
+    "stealth-fake-task": "stealth_fake_task",
+    "pretend_task": "stealth_fake_task",
+    "pretend task": "stealth_fake_task",
+    "stalking": "stalk",
+    "follow": "stalk",
+    "following": "stalk",
+    "shadow": "stalk",
+    "chase": "aggressive_chase",
+    "aggressive": "aggressive_chase",
+    "aggressive chase": "aggressive_chase",
+    "aggressive-chase": "aggressive_chase",
+    "hunt": "final_hunt",
+    "final hunt": "final_hunt",
+    "final-hunt": "final_hunt",
+    "final_hunting": "final_hunt",
+    "freeze": "frozen",
+    "pause": "frozen",
+    "none": "idle",
+    "wait": "idle",
+}
+
+VALID_PHASES = {
+    "Lobby",
+    "ExplorationA",
+    "GasWave",
+    "ExplorationB",
+    "Meeting",
+    "AntidoteVote",
+    "AntidoteFreeze",
+    "FinalChase",
+    "Ended",
+}
+
+ROOM_HINTS = {
+    "CentralHub",
+    "Central Hub",
+    "Electrical",
+    "Electrical Room",
+    "Security",
+    "Security Room",
+    "PipeRoom",
+    "Pipe Room",
+    "Maintenance",
+    "Maintenance Area",
+    "Generator",
+    "Generator Room",
+    "Communications",
+    "Communications Room",
+    "ExitGate",
+    "Exit Gate",
+    "Wires",
+    "Unknown",
+}
+
+CHAT_MAX_MESSAGES = 3
+CHAT_MAX_CHARS = 90
+
+
+# ---------------------------------------------------------------------------
+# Generic helpers
+# ---------------------------------------------------------------------------
 
 def _ai_mode_enabled() -> bool:
-    return config.AI_MODE == "agent"
+    return str(getattr(config, "AI_MODE", "rules")).strip().lower() == "agent"
 
 
 def _llm_ready() -> bool:
-    return bool(config.GROQ_API_KEY.strip())
+    """
+    The current project normally uses Groq through llm_adapter.
+    Keep this permissive but safe so rules fallback still works if no key exists.
+    """
+    provider = str(getattr(config, "LLM_PROVIDER", "groq")).strip().lower()
+
+    groq_key = str(getattr(config, "GROQ_API_KEY", "") or "").strip()
+    gemini_key = str(getattr(config, "GEMINI_API_KEY", "") or "").strip()
+
+    if provider == "gemini":
+        return bool(gemini_key or groq_key)
+
+    return bool(groq_key)
 
 
 def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
     return str(value).strip()
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _req_get(req: Any, field: str, default: Any = None) -> Any:
+    value = getattr(req, field, default)
+    return default if value is None else value
+
+
+def _phase(req: Any) -> str:
+    raw = _normalize_text(_req_get(req, "phase", "Unknown"))
+    return raw if raw else "Unknown"
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _player_label(player_id: str | None) -> str:
+    if not player_id:
+        return "unknown"
+    if player_id.startswith("player_"):
+        suffix = player_id.split("_", 1)[-1]
+        if suffix.isdigit():
+            return f"Player {suffix}"
+    return player_id.replace("_", " ").title()
+
+
+def _normalize_personality(value: Any) -> str:
+    if not isinstance(value, str):
+        return "crowd_follower"
+    lowered = value.strip().lower().replace("-", "_")
+    return lowered if lowered in {"quiet", "deflector", "framer", "panicker", "crowd_follower"} else "crowd_follower"
+
+
+def _compact_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return str(value)
+
+
+async def _call_llm(prompt: str) -> str | None:
+    """
+    Calls the adapter safely. Any LLM/API failure returns None so local fallback
+    systems can continue the game.
+    """
+    try:
+        raw = await llm_adapter.generate_chat_response(prompt)
+    except Exception:
+        return None
+
+    if not isinstance(raw, str):
+        return None
+
+    raw = raw.strip()
+    return raw if raw else None
+
+
+# ---------------------------------------------------------------------------
+# JSON loading / repair
+# ---------------------------------------------------------------------------
+
+def _strip_code_fence(text: str) -> str:
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+    return text.strip()
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    """
+    Extract the first balanced {...} object from messy LLM output.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for idx in range(start, len(text)):
+        ch = text[idx]
+
+        if escape:
+            escape = False
+            continue
+
+        if ch == "\\":
+            escape = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start: idx + 1]
+
+    return None
 
 
 def _load_json(text: str | None) -> dict[str, Any] | None:
     if not isinstance(text, str):
         return None
+
+    cleaned = _strip_code_fence(text)
+
+    # First try direct JSON.
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    # Then try extracting object from extra text.
+    obj = _extract_first_json_object(cleaned)
+    if not obj:
+        return None
+
+    try:
+        parsed = json.loads(obj)
     except json.JSONDecodeError:
         return None
+
     return parsed if isinstance(parsed, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Safety / validation helpers
+# ---------------------------------------------------------------------------
+
 def _has_forbidden_chat_content(text: str) -> bool:
     lowered = text.lower()
+
     for phrase in FORBIDDEN_CHAT_PHRASES:
+        phrase = phrase.lower().strip()
+        if not phrase:
+            continue
+
         if " " in phrase:
             if phrase in lowered:
                 return True
-        elif re.search(rf"\b{re.escape(phrase)}\b", lowered):
-            return True
+        else:
+            if re.search(rf"\b{re.escape(phrase)}\b", lowered):
+                return True
+
     return False
+
+
+def _normalize_behavior_mode(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    lowered = raw.lower().replace("-", "_").strip()
+
+    if lowered in ALLOWED_BEHAVIOR_MODES:
+        return lowered
+
+    alias_key = raw.lower().strip()
+    alias_key = alias_key.replace("_", " ").replace("-", " ")
+    alias_key = re.sub(r"\s+", " ", alias_key)
+
+    if alias_key in BEHAVIOR_MODE_ALIASES:
+        return BEHAVIOR_MODE_ALIASES[alias_key]
+
+    alias_key_underscore = alias_key.replace(" ", "_")
+    if alias_key_underscore in BEHAVIOR_MODE_ALIASES:
+        return BEHAVIOR_MODE_ALIASES[alias_key_underscore]
+
+    return None
+
+
+def _valid_human_targets(req: DecideRequest) -> list[str]:
+    humans = [p for p in _as_list(req.humanPlayers) if isinstance(p, str) and p.strip()]
+    alive = {p for p in _as_list(req.alivePlayers) if isinstance(p, str) and p.strip()}
+
+    if alive:
+        humans = [p for p in humans if p in alive]
+
+    return [p for p in humans if p != req.botId]
+
+
+def _valid_vote_targets(req: VoteRequest) -> list[str]:
+    alive = [p for p in _as_list(req.alivePlayers) if isinstance(p, str) and p.strip()]
+    infected = {p for p in _as_list(req.infectedPlayers) if isinstance(p, str) and p.strip()}
+
+    targets = [
+        p for p in alive
+        if p != req.botId and p not in infected
+    ]
+
+    humans = [p for p in _as_list(req.humanPlayers) if isinstance(p, str) and p.strip()]
+    if humans:
+        human_set = set(humans)
+        human_targets = [p for p in targets if p in human_set]
+        if human_targets:
+            return human_targets
+
+    return targets
 
 
 def _valid_target_player(req: DecideRequest, target_player: Any) -> str | None:
     if target_player is None:
         return None
+
     if not isinstance(target_player, str):
         return None
+
     target_player = target_player.strip()
     if not target_player:
         return None
-    valid_players = {player for player in req.humanPlayers if isinstance(player, str)}
-    if target_player not in valid_players:
+
+    if target_player not in _valid_human_targets(req):
         return None
-    if target_player == req.botId:
-        return None
+
     return target_player
 
 
-def _build_decide_prompt(req: DecideRequest, bot_state: dict[str, Any]) -> str:
-    return (
-        "Return strict JSON only. No markdown. No code fences. No explanation outside the JSON object.\n"
-        "Choose one behaviorMode from: stealth_fake_task, stalk, aggressive_chase, final_hunt.\n"
-        "If behaviorMode is final_hunt, only use it when exactly one human remains.\n"
-        "targetPlayer must be a valid human or null.\n"
-        "shouldChase should be true only for aggressive_chase or final_hunt.\n\n"
-        f"matchId: {req.matchId}\n"
-        f"botId: {req.botId}\n"
-        f"phase: {req.phase}\n"
-        f"wave: {req.wave}\n"
-        f"infectedPlayers: {req.infectedPlayers}\n"
-        f"humanPlayers: {req.humanPlayers}\n"
-        f"nearestHuman: {req.nearestHuman}\n"
-        f"botRoom: {req.botRoom or bot_state.get('botRoom')}\n"
-    )
-
-
-def _build_chat_prompt(req: RespondRequest, bot_state: dict[str, Any]) -> str:
-    base = build_meeting_chat_prompt(req)
-    return (
-        "Return strict JSON only. No markdown. No code fences. No explanation outside JSON.\n"
-        'Schema: {"messages": ["msg1", "msg2"], "reason": "short reason"}.\n'
-        "Put each chat line in the messages array (do not use | inside strings).\n"
-        "0-5 messages. Each max 90 characters. 0 messages allowed if silence fits.\n\n"
-        f"{base}"
-    )
-
-
-def _build_vote_prompt(req: VoteRequest, bot_state: dict[str, Any]) -> str:
-    return (
-        "Return strict JSON only. No markdown, no explanation.\n"
-        "Schema: {\"voteTarget\": \"player_x\", \"reason\": \"short reason\"}.\n"
-        "voteTarget must be a living player, not the bot, and not a known infected player.\n\n"
-        f"botId: {req.botId}\n"
-        f"alivePlayers: {req.alivePlayers}\n"
-        f"infectedPlayers: {req.infectedPlayers}\n"
-        f"recentChat: {req.recentChat}\n"
-        f"botRoom: {bot_state.get('botRoom') or 'unknown'}\n"
-    )
-
-
-def _should_chase_for_mode(mode: str) -> bool:
-    return mode in {"aggressive_chase", "final_hunt"}
-
-
-async def decide_behavior_with_agent(request: DecideRequest) -> dict[str, Any] | None:
-    if not _ai_mode_enabled() or not _llm_ready():
+def _valid_vote_target(req: VoteRequest, vote_target: Any) -> str | None:
+    if vote_target is None:
         return None
 
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await llm_adapter.generate_chat_response(_build_decide_prompt(request, bot_state))
-    payload = _load_json(raw_text)
-    if not payload:
-        return None
-
-    behavior_mode = payload.get("behaviorMode")
-    if behavior_mode not in ALLOWED_BEHAVIOR_MODES:
-        return None
-
-    target_player = _valid_target_player(request, payload.get("targetPlayer"))
-    if payload.get("targetPlayer") is not None and target_player is None:
-        return None
-
-    if behavior_mode == "final_hunt" and len(request.humanPlayers) != 1:
-        return None
-
-    should_chase = payload.get("shouldChase")
-    if not isinstance(should_chase, bool) or should_chase != _should_chase_for_mode(behavior_mode):
-        return None
-
-    target_room = payload.get("targetRoom")
-    if target_room is not None and not isinstance(target_room, str):
-        return None
-    target_room = target_room.strip() if isinstance(target_room, str) else None
-    if target_room == "":
-        target_room = None
-
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        return None
-
-    return {
-        "behaviorMode": behavior_mode,
-        "targetPlayer": target_player,
-        "targetRoom": target_room,
-        "shouldChase": should_chase,
-        "reason": reason.strip(),
-    }
-
-
-async def validate_decide_behavior_with_agent(request: DecideRequest) -> tuple[dict[str, Any] | None, str | None]:
-    if not _ai_mode_enabled():
-        return None, None
-    if not _llm_ready():
-        return None, "missing_llm_key"
-
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await llm_adapter.generate_chat_response(_build_decide_prompt(request, bot_state))
-    payload = _load_json(raw_text)
-    if not payload:
-        return None, "invalid_json"
-
-    behavior_mode = payload.get("behaviorMode")
-    if behavior_mode not in ALLOWED_BEHAVIOR_MODES:
-        return None, f"invalid behaviorMode: {behavior_mode!r}"
-
-    target_player_raw = payload.get("targetPlayer")
-    target_player = _valid_target_player(request, target_player_raw)
-    if target_player_raw is not None and target_player is None:
-        return None, f"invalid targetPlayer: {target_player_raw!r}"
-
-    if behavior_mode == "final_hunt" and len(request.humanPlayers) != 1:
-        return None, "final_hunt only allowed when one human remains"
-
-    should_chase = payload.get("shouldChase")
-    if not isinstance(should_chase, bool):
-        return None, "shouldChase must be boolean"
-    if should_chase != _should_chase_for_mode(behavior_mode):
-        return None, f"shouldChase mismatch for {behavior_mode}"
-
-    target_room = payload.get("targetRoom")
-    if target_room is not None and not isinstance(target_room, str):
-        return None, "targetRoom must be string or null"
-    target_room = target_room.strip() if isinstance(target_room, str) else None
-    if target_room == "":
-        target_room = None
-
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        return None, "reason must be a non-empty string"
-
-    return {
-        "behaviorMode": behavior_mode,
-        "targetPlayer": target_player,
-        "targetRoom": target_room,
-        "shouldChase": should_chase,
-        "reason": reason.strip(),
-    }, None
-
-
-async def generate_chat_with_agent(request: RespondRequest) -> dict[str, Any] | None:
-    if not _ai_mode_enabled() or not _llm_ready():
-        return None
-
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await llm_adapter.generate_chat_response(_build_chat_prompt(request, bot_state))
-    payload = _load_json(raw_text)
-    if not payload:
-        return None
-
-    messages = payload.get("messages")
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        return None
-    if not isinstance(messages, list) or not messages:
-        return None
-    if len(messages) > 5:   # allow up to 5 burst messages
-        return None
-
-    normalized_messages: list[str] = []
-    for message in messages:
-        if not isinstance(message, str):
-            return None
-        normalized = clean_message(message)
-        if not normalized or is_bad_bot_output(normalized):
-            return None
-        normalized_messages.append(normalized)
-
-    if any(is_bad_bot_output(message) for message in normalized_messages):
-        return None
-
-    return {
-        "messages": normalized_messages,
-        "reason": reason.strip(),
-    }
-
-
-
-async def decide_vote_with_agent(request: VoteRequest) -> dict[str, Any] | None:
-    if not _ai_mode_enabled() or not _llm_ready():
-        return None
-
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await llm_adapter.generate_chat_response(_build_vote_prompt(request, bot_state))
-    payload = _load_json(raw_text)
-    if not payload:
-        return None
-
-    vote_target = payload.get("voteTarget")
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        return None
     if not isinstance(vote_target, str):
         return None
 
     vote_target = vote_target.strip()
     if not vote_target:
         return None
-    if vote_target == request.botId:
+
+    return vote_target if vote_target in _valid_vote_targets(req) else None
+
+
+def _normalize_target_room(value: Any) -> str | None:
+    if value is None:
         return None
-    if vote_target not in request.alivePlayers:
+
+    if not isinstance(value, str):
         return None
-    if vote_target in request.infectedPlayers:
+
+    room = value.strip()
+    if not room:
         return None
+
+    # Allow unknown dynamic room names from Unity, but clean obvious garbage.
+    if len(room) > 60:
+        return None
+
+    if re.search(r"[{}[\]<>]", room):
+        return None
+
+    return room
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1", "y"}:
+            return True
+        if lowered in {"false", "no", "0", "n"}:
+            return False
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    return default
+
+
+def _should_chase_for_mode(mode: str) -> bool:
+    return mode in CHASE_MODES
+
+
+def _is_final_context(req: DecideRequest) -> bool:
+    phase = _phase(req)
+    is_final_flag = bool(_req_get(req, "isFinalChase", False))
+    human_count = len(_valid_human_targets(req))
+    return is_final_flag or phase == "FinalChase" or human_count == 1
+
+
+def _choose_default_target(req: DecideRequest) -> str | None:
+    nearest = _valid_target_player(req, _req_get(req, "nearestHuman", None))
+    if nearest:
+        return nearest
+
+    humans = _valid_human_targets(req)
+    return humans[0] if humans else None
+
+
+def _decision_pressure(req: DecideRequest) -> str:
+    human_count = len(_valid_human_targets(req))
+    infected_count = len([
+        p for p in _as_list(req.infectedPlayers)
+        if isinstance(p, str) and p.strip()
+    ])
+    task_progress = _safe_int(_req_get(req, "taskProgress", 0), 0)
+    wave = _safe_int(_req_get(req, "wave", 0), 0)
+
+    if _is_final_context(req):
+        return "final_chase"
+    if infected_count >= human_count and human_count > 1:
+        return "infection_advantage"
+    if task_progress >= 7:
+        return "tasks_nearly_done"
+    if wave <= 1:
+        return "early_stealth"
+    if wave >= 3:
+        return "late_pressure"
+    return "mid_game"
+
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+def _build_decide_prompt(req: DecideRequest, bot_state: dict[str, Any]) -> str:
+    human_targets = _valid_human_targets(req)
+    default_target = _choose_default_target(req)
+    phase = _phase(req)
+    pressure = _decision_pressure(req)
+    bot_personality = _normalize_personality(bot_state.get("personality"))
+
+    return (
+        "Return strict JSON only. No markdown. No code fences. No explanation outside JSON.\n"
+        "You are the infected bot behavior director for THE INFECTED, a 4-player top-down mobile horror social deduction game.\n\n"
+        "Your job:\n"
+        "- Choose high-level intent only.\n"
+        "- Unity handles pathfinding, collision, infection triggers, and movement.\n"
+        "- Do not output movement coordinates.\n"
+        "- Do not invent player IDs.\n"
+        "- Do not choose infected players as targets.\n\n"
+        "Allowed behaviorMode values:\n"
+        "- stealth_fake_task: fake normal task behavior and avoid obvious aggression.\n"
+        "- stalk: drift toward a human or room without full chase.\n"
+        "- aggressive_chase: pressure humans when infection has advantage or tasks are high.\n"
+        "- final_hunt: only when FinalChase or exactly one human remains.\n"
+        "- frozen: only if bot should not move.\n"
+        "- idle: only if no useful action exists.\n\n"
+        "Decision strategy:\n"
+        "- Early game: mostly stealth_fake_task, sometimes stalk.\n"
+        "- Mid game: stalk nearest human or suspicious room.\n"
+        "- If infected count >= human count: aggressive_chase is allowed.\n"
+        "- If taskProgress is 7 or higher: increase pressure.\n"
+        "- If FinalChase or one human remains: final_hunt.\n"
+        "- shouldChase must be true only for aggressive_chase or final_hunt.\n"
+        "- shouldChase must be false for stealth_fake_task, stalk, frozen, idle.\n\n"
+        "Strict JSON schema:\n"
+        "{"
+        "\"behaviorMode\":\"stealth_fake_task|stalk|aggressive_chase|final_hunt|frozen|idle\","
+        "\"targetPlayer\":\"player_x or null\","
+        "\"targetRoom\":\"room name or null\","
+        "\"shouldChase\":true,"
+        "\"reason\":\"short reason\""
+        "}\n\n"
+        f"matchId: {req.matchId}\n"
+        f"botId: {req.botId}\n"
+        f"botPersonality: {bot_personality}\n"
+        f"phase: {phase}\n"
+        f"wave: {_req_get(req, 'wave', 0)}\n"
+        f"cycle: {_req_get(req, 'cycle', 0)}\n"
+        f"taskProgress: {_req_get(req, 'taskProgress', 0)}/8\n"
+        f"pressureState: {pressure}\n"
+        f"alivePlayers: {_compact_json(_as_list(req.alivePlayers))}\n"
+        f"infectedPlayers: {_compact_json(_as_list(req.infectedPlayers))}\n"
+        f"humanPlayers: {_compact_json(_as_list(req.humanPlayers))}\n"
+        f"validTargetPlayers: {_compact_json(human_targets)}\n"
+        f"defaultTargetIfNeeded: {default_target}\n"
+        f"nearestHuman: {_req_get(req, 'nearestHuman', None)}\n"
+        f"botRoom: {_req_get(req, 'botRoom', None) or bot_state.get('botRoom') or 'unknown'}\n"
+        f"nearestHumanRoom: {_req_get(req, 'nearestHumanRoom', None) or 'unknown'}\n"
+        f"secondsSinceLastSeenHuman: {_req_get(req, 'secondsSinceLastSeenHuman', 999)}\n"
+    )
+
+
+def _build_chat_prompt(req: RespondRequest, bot_state: dict[str, Any]) -> str:
+    base = build_meeting_chat_prompt(req, bot_state=bot_state)
+
+    return (
+        "Return strict JSON only. No markdown. No code fences. No explanation outside JSON.\n"
+        "You are generating chat for ONE infected bot pretending to be a normal player.\n"
+        "You must obey the embedded meeting prompt below.\n\n"
+        "Strict JSON schema:\n"
+        "{"
+        "\"messages\":[\"msg1\",\"msg2\"],"
+        "\"reason\":\"short reason\""
+        "}\n\n"
+        "Message rules:\n"
+        "- messages may be [] for silence.\n"
+        "- 1 message is most common.\n"
+        "- 2 messages when accused or pressured.\n"
+        "- 3 messages max.\n"
+        "- each message max 90 characters.\n"
+        "- no markdown.\n"
+        "- no quotes inside messages unless natural.\n"
+        "- no AI/model/system/backend/API words.\n"
+        "- never reveal infected role.\n"
+        "- do not use | inside message strings.\n\n"
+        f"Stored bot state: {_compact_json(bot_state)}\n\n"
+        "Embedded meeting prompt:\n"
+        f"{base}"
+    )
+
+
+def _build_vote_prompt(req: VoteRequest, bot_state: dict[str, Any]) -> str:
+    valid_targets = _valid_vote_targets(req)
+
+    return (
+        "Return strict JSON only. No markdown. No explanation.\n"
+        "You are deciding an infected bot's antidote vote in THE INFECTED.\n\n"
+        "Voting meaning:\n"
+        "- This is antidote voting, not elimination.\n"
+        "- The chosen target will be frozen and may be cured if recently infected.\n"
+        "- As infected, prefer voting for a human target.\n"
+        "- Never vote for yourself.\n"
+        "- Never vote known infected if a human target exists.\n"
+        "- If multiple infected bots exist, they must never vote for each other while humans remain valid.\n"
+        "- If someone accused you, counter-vote that accuser if valid.\n"
+        "- If no accuser is obvious, vote a valid human who is pushing hardest or most dangerous.\n\n"
+        "Strict JSON schema:\n"
+        "{"
+        "\"voteTarget\":\"player_x or null\","
+        "\"reason\":\"short reason\""
+        "}\n\n"
+        f"botId: {req.botId}\n"
+        f"phase: {_req_get(req, 'phase', 'AntidoteVote')}\n"
+        f"wave: {_req_get(req, 'wave', 0)}\n"
+        f"cycle: {_req_get(req, 'cycle', 0)}\n"
+        f"alivePlayers: {_compact_json(_as_list(req.alivePlayers))}\n"
+        f"humanPlayers: {_compact_json(_as_list(_req_get(req, 'humanPlayers', [])))}\n"
+        f"infectedPlayers: {_compact_json(_as_list(req.infectedPlayers))}\n"
+        f"validVoteTargets: {_compact_json(valid_targets)}\n"
+        f"recentChat: {_compact_json(_as_list(req.recentChat))}\n"
+        f"botRoom: {bot_state.get('botRoom') or 'unknown'}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Decision validation / repair
+# ---------------------------------------------------------------------------
+
+def _validate_decide_payload(
+    request: DecideRequest,
+    payload: dict[str, Any],
+    *,
+    allow_repair: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    behavior_mode = _normalize_behavior_mode(payload.get("behaviorMode"))
+    if not behavior_mode:
+        return None, f"invalid behaviorMode: {payload.get('behaviorMode')!r}"
+
+    is_final = _is_final_context(request)
+    human_targets = _valid_human_targets(request)
+
+    if behavior_mode == "final_hunt" and not is_final:
+        if allow_repair:
+            behavior_mode = "aggressive_chase" if human_targets else "idle"
+        else:
+            return None, "final_hunt only allowed during FinalChase or one-human state"
+
+    if behavior_mode in {"aggressive_chase", "stalk", "final_hunt"} and not human_targets:
+        if allow_repair:
+            behavior_mode = "idle"
+        else:
+            return None, "chase/stalk mode requires valid human target"
+
+    raw_target = payload.get("targetPlayer")
+    target_player = _valid_target_player(request, raw_target)
+
+    if raw_target is not None and target_player is None and not allow_repair:
+        return None, f"invalid targetPlayer: {raw_target!r}"
+
+    if behavior_mode in {"aggressive_chase", "stalk", "final_hunt"} and target_player is None:
+        target_player = _choose_default_target(request)
+
+    if behavior_mode in {"stealth_fake_task", "frozen", "idle"}:
+        # These modes do not need a player target.
+        target_player = target_player if behavior_mode == "stealth_fake_task" else None
+
+    target_room = _normalize_target_room(payload.get("targetRoom"))
+
+    if target_room is None:
+        nearest_room = _normalize_target_room(_req_get(request, "nearestHumanRoom", None))
+        bot_room = _normalize_target_room(_req_get(request, "botRoom", None))
+        if behavior_mode in {"stalk", "aggressive_chase", "final_hunt"}:
+            target_room = nearest_room or bot_room
+        elif behavior_mode == "stealth_fake_task":
+            target_room = bot_room or "CentralHub"
+
+    should_chase = _coerce_bool(payload.get("shouldChase"), default=_should_chase_for_mode(behavior_mode))
+    expected_chase = _should_chase_for_mode(behavior_mode)
+
+    if should_chase != expected_chase:
+        if allow_repair:
+            should_chase = expected_chase
+        else:
+            return None, f"shouldChase mismatch for {behavior_mode}"
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        if allow_repair:
+            reason = f"{behavior_mode} selected from current match pressure."
+        else:
+            return None, "reason must be a non-empty string"
+
+    reason = reason.strip()
+    if len(reason) > 180:
+        reason = reason[:177].rstrip() + "..."
+
+    return {
+        "behaviorMode": behavior_mode,
+        "targetPlayer": target_player,
+        "targetRoom": target_room,
+        "shouldChase": should_chase,
+        "reason": reason,
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Public behavior functions
+# ---------------------------------------------------------------------------
+
+async def decide_behavior_with_agent(request: DecideRequest) -> dict[str, Any] | None:
+    """
+    Ask the LLM agent for a high-level bot behavior decision.
+
+    Returns None if agent mode is off, LLM is unavailable, output is invalid,
+    or safety validation fails. Local endpoint fallback should handle None.
+    """
+    if not _ai_mode_enabled() or not _llm_ready():
+        return None
+
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    raw_text = await _call_llm(_build_decide_prompt(request, bot_state))
+    payload = _load_json(raw_text)
+
+    if not payload:
+        return None
+
+    result, _error = _validate_decide_payload(request, payload, allow_repair=True)
+    return result
+
+
+async def validate_decide_behavior_with_agent(
+    request: DecideRequest,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Same as decide_behavior_with_agent, but returns a specific validation error.
+    Useful for tests and trace/debug tooling.
+    """
+    if not _ai_mode_enabled():
+        return None, None
+
+    if not _llm_ready():
+        return None, "missing_llm_key"
+
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    raw_text = await _call_llm(_build_decide_prompt(request, bot_state))
+
+    if raw_text is None:
+        return None, "llm_call_failed"
+
+    payload = _load_json(raw_text)
+    if not payload:
+        return None, "invalid_json"
+
+    return _validate_decide_payload(request, payload, allow_repair=False)
+
+
+# ---------------------------------------------------------------------------
+# Chat generation
+# ---------------------------------------------------------------------------
+
+def _normalize_messages(value: Any) -> list[str] | None:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        # Some models ignore JSON array and return one string.
+        value = value.strip()
+        if not value:
+            return []
+        parts = [p.strip() for p in value.split("|")]
+        return [p for p in parts if p]
+
+    if not isinstance(value, list):
+        return None
+
+    messages: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        stripped = item.strip()
+        if stripped:
+            messages.append(stripped)
+
+    return messages
+
+
+def _clean_and_validate_messages(messages: list[str]) -> list[str] | None:
+    if len(messages) > CHAT_MAX_MESSAGES:
+        return None
+
+    cleaned_messages: list[str] = []
+    seen: set[str] = set()
+
+    for raw in messages:
+        if not isinstance(raw, str):
+            return None
+
+        # Do not allow pipe inside a message because API expects separate messages.
+        raw = raw.replace("|", " ").strip()
+
+        normalized = clean_message(raw)
+        if not normalized:
+            continue
+
+        # Keep messages short and mobile-chat-like.
+        if len(normalized) > CHAT_MAX_CHARS:
+            normalized = normalized[:CHAT_MAX_CHARS].rstrip()
+
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            continue
+
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+
+        if _has_forbidden_chat_content(normalized):
+            return None
+
+        if is_bad_bot_output(normalized):
+            return None
+
+        cleaned_messages.append(normalized)
+
+    if len(cleaned_messages) > CHAT_MAX_MESSAGES:
+        return None
+
+    return cleaned_messages
+
+
+async def generate_chat_with_agent(request: RespondRequest) -> dict[str, Any] | None:
+    """
+    Generate meeting chat using the LLM agent.
+
+    Returns:
+    {
+        "messages": [...],
+        "reason": "..."
+    }
+
+    Can return {"messages": [], "reason": "..."} for intentional silence.
+    Returns None if unsafe/invalid so the rules fallback can respond instead.
+    """
+    if not _ai_mode_enabled() or not _llm_ready():
+        return None
+
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    raw_text = await _call_llm(_build_chat_prompt(request, bot_state))
+    payload = _load_json(raw_text)
+
+    if not payload:
+        return None
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        reason = "agent chat decision"
+
+    if _has_forbidden_chat_content(reason):
+        reason = "safe chat decision"
+
+    messages_raw = _normalize_messages(payload.get("messages"))
+    if messages_raw is None:
+        return None
+
+    messages = _clean_and_validate_messages(messages_raw)
+    if messages is None:
+        return None
+
+    # Silence is allowed in V4 if the model intentionally chooses it.
+    reason = reason.strip()
+    if len(reason) > 180:
+        reason = reason[:177].rstrip() + "..."
+
+    return {
+        "messages": messages,
+        "reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Vote validation / strategy
+# ---------------------------------------------------------------------------
+
+def _extract_accusers_against_bot(request: VoteRequest) -> list[str]:
+    """
+    Best-effort recent chat scanner.
+    Finds humans/alive players who accused this bot.
+    """
+    bot_id = request.botId
+    bot_number = bot_id.split("_")[-1] if "_" in bot_id else ""
+    bot_patterns = [
+        bot_id.lower(),
+        bot_id.replace("_", " ").lower(),
+        f"p{bot_number}",
+        bot_number,
+    ]
+
+    accusation_words = [
+        "sus",
+        "infected",
+        "weird",
+        "following",
+        "chasing",
+        "fake",
+        "lying",
+        "bot",
+        "ai",
+        "vote",
+        "freeze",
+        "antidote",
+    ]
+
+    valid_targets = set(_valid_vote_targets(request))
+    accusers: list[str] = []
+
+    for item in _as_list(request.recentChat):
+        sender = ""
+        text = ""
+
+        if isinstance(item, dict):
+            sender = _normalize_text(item.get("sender") or item.get("senderId"))
+            text = _normalize_text(item.get("text"))
+        else:
+            sender = _normalize_text(getattr(item, "sender", "") or getattr(item, "senderId", ""))
+            text = _normalize_text(getattr(item, "text", ""))
+
+        if not sender or sender not in valid_targets:
+            continue
+
+        lowered = text.lower()
+        mentions_bot = any(re.search(rf"\b{re.escape(p)}\b", lowered) for p in bot_patterns if p)
+        accuses = any(word in lowered for word in accusation_words)
+
+        if mentions_bot and accuses and sender not in accusers:
+            accusers.append(sender)
+
+    return accusers
+
+
+def _validate_vote_payload(
+    request: VoteRequest,
+    payload: dict[str, Any],
+    *,
+    allow_repair: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    valid_targets = _valid_vote_targets(request)
+
+    if not valid_targets:
+        return {
+            "voteTarget": None,
+            "reason": "No valid human vote target available.",
+        }, None
+
+    raw_target = payload.get("voteTarget")
+    vote_target = _valid_vote_target(request, raw_target)
+
+    if vote_target is None:
+        if allow_repair:
+            accusers = _extract_accusers_against_bot(request)
+            vote_target = accusers[0] if accusers else valid_targets[0]
+        else:
+            return None, f"invalid voteTarget: {raw_target!r}"
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        if allow_repair:
+            reason = "Selected a valid human target."
+        else:
+            return None, "reason must be a non-empty string"
+
+    reason = reason.strip()
+    if _has_forbidden_chat_content(reason):
+        reason = "Strategic vote target."
+
+    if len(reason) > 180:
+        reason = reason[:177].rstrip() + "..."
 
     return {
         "voteTarget": vote_target,
-        "reason": reason.strip(),
-    }
+        "reason": reason,
+    }, None
+
+
+async def decide_vote_with_agent(request: VoteRequest) -> dict[str, Any] | None:
+    """
+    Ask the LLM agent for a bot antidote vote.
+
+    Returns None if agent is unavailable or unsafe, so endpoint fallback can choose.
+    """
+    if not _ai_mode_enabled() or not _llm_ready():
+        return None
+
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    raw_text = await _call_llm(_build_vote_prompt(request, bot_state))
+    payload = _load_json(raw_text)
+
+    if not payload:
+        return None
+
+    result, _error = _validate_vote_payload(request, payload, allow_repair=False)
+    return result

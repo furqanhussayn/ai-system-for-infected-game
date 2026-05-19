@@ -1,0 +1,56 @@
+== generalized smoke start ==
+== register player_3 ==
+{
+    "ok":  true,
+    "botId":  "player_3",
+    "personality":  "quiet",
+    "behaviorMode":  "stealth_fake_task",
+    "trace":  "Registered bot with personality quiet and early stealth_fake_task behavior."
+}
+== decide player_3 ==
+{
+    "botId":  "player_3",
+    "behaviorMode":  "stalk",
+    "targetRoom":  "CentralHub",
+    "targetPlayer":  "player_1",
+    "shouldChase":  false,
+    "nextDecisionInSeconds":  21,
+    "trace":  "Mid game: stalk nearest human but avoid obvious chase."
+}
+== respond player_4 ==
+{
+    "botId":  "player_4",
+    "respond":  true,
+    "messages":  [
+                     "nah i was at wires",
+                     "literally why me"
+                 ],
+    "typingDelaySeconds":  5.26,
+    "secondMessageDelaySeconds":  1.51,
+    "trace":  "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1626, 1277]",
+    "delaysMs":  [
+                     1626,
+                     1277
+                 ]
+}
+== vote player_4 ==
+{
+    "botId":  "player_4",
+    "voteTarget":  "player_3",
+    "reason":  "random vote",
+    "trace":  "random vote"
+}
+== multiple infected bots ==
+{
+    "botId":  "player_2",
+    "voteTarget":  "player_3",
+    "reason":  "least suspicious",
+    "trace":  "least suspicious"
+}
+{
+    "botId":  "player_4",
+    "voteTarget":  "player_3",
+    "reason":  "survived this long",
+    "trace":  "survived this long"
+}
+== generalized smoke complete ==

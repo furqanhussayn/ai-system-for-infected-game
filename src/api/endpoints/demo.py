@@ -15,6 +15,8 @@ from src.core.state import clear_match
 
 router = APIRouter()
 
+# Demo sample player IDs are sample-only. Production Unity calls pass real match state.
+
 
 async def _call_register(match_id: str):
     payload = {

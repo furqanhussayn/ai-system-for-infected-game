@@ -39,6 +39,7 @@ from src.api.endpoints.respond import build_response_payload as original_build_r
 
 router = APIRouter()
 
+# Chat Lab sample defaults are for testing only. Production Unity calls pass real match state.
 # Fixed Chat Lab IDs
 CHAT_LAB_MATCH_ID = "CHAT_LAB"
 PLAYER_1 = "player_1"
@@ -885,9 +886,19 @@ async def send_chat_lab_message(req: ChatLabSendRequest):
 
         if req.multiBot:
             # Multi-bot mode
+            fake_req = RespondRequest(
+                matchId=CHAT_LAB_MATCH_ID,
+                botId=PLAYER_2,
+                message=user_message,
+                recentChat=state["recentChat"],
+                alivePlayers=ALIVE_PLAYERS,
+                infectedPlayers=INFECTED_PLAYERS,
+            )
             plans, debug_info = select_responders(
                 user_message,
                 recent_chat=state["recentChat"],
+                bots=BOT_PARTICIPANTS,
+                request=fake_req,
                 force_response=req.forceResponse,
                 debug=req.debug,
             )
