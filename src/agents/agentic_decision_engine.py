@@ -6,10 +6,12 @@ from typing import Any
 
 from src.agents.chat_style_guard import clean_message, is_bad_bot_output
 from src.agents.meeting_chat_prompt import build_meeting_chat_prompt
+from src.agents import prompt_budgeter
 from src.core import config
 from src.core.state import get_bot_state
 from src.models.schemas import DecideRequest, RespondRequest, VoteRequest
 from src.services import llm_adapter
+from src.services import llm_router
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +219,23 @@ async def _call_llm(prompt: str) -> str | None:
     except Exception:
         return None
 
+    if isinstance(raw, llm_adapter.LLMResult):
+        return raw.text.strip() or None
     if not isinstance(raw, str):
         return None
 
     raw = raw.strip()
     return raw if raw else None
+
+
+async def _call_llm_result(prompt: str) -> llm_adapter.LLMResult:
+    return await llm_router.generate_for_chat(
+        prompt,
+        model=None,
+        purpose="respond",
+        max_output_tokens=int(getattr(config, "LLM_MAX_OUTPUT_TOKENS", 80)),
+        temperature=0.7,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +582,9 @@ def _build_chat_prompt(req: RespondRequest, bot_state: dict[str, Any]) -> str:
         "\"messages\":[\"msg1\",\"msg2\"],"
         "\"reason\":\"short reason\""
         "}\n\n"
+        "Example output (must be valid JSON):\n"
+        "{\"messages\":[\"i was at electrical\",\"i did tasks\"],\"reason\":\"saw someone near gen\"}\n\n"
+        "IMPORTANT: Return compact single-line JSON only (no newlines, no pretty formatting).\n"
         "Message rules:\n"
         "- messages may be [] for silence.\n"
         "- 1 message is most common.\n"
@@ -710,17 +727,64 @@ async def decide_behavior_with_agent(request: DecideRequest) -> dict[str, Any] |
     Returns None if agent mode is off, LLM is unavailable, output is invalid,
     or safety validation fails. Local endpoint fallback should handle None.
     """
-    if not _ai_mode_enabled() or not _llm_ready():
+    if not _ai_mode_enabled():
         return None
 
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await _call_llm(_build_decide_prompt(request, bot_state))
-    payload = _load_json(raw_text)
+    if not _llm_ready():
+        provider = str(getattr(config, "LLM_PROVIDER", "groq")).strip().lower() or "groq"
+        model = config.GROQ_MODEL if provider == "groq" else config.GEMINI_MODEL
+        missing_result = llm_adapter.LLMResult(
+            ok=False,
+            provider=provider,
+            model=model,
+            stage="missing_api_key",
+            errorType="MissingAPIKey",
+            errorMessage="LLM key is not configured.",
+            llmUsed=False,
+        )
+        return {
+            "messages": [],
+            "reason": "missing_api_key",
+            "llmDebug": _llm_debug_from_result(
+                missing_result,
+                llm_attempted=True,
+                llm_used=False,
+                fallback_reason="missing_api_key",
+            ),
+        }
 
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    llm_result = await _call_llm_result(_build_decide_prompt(request, bot_state))
+    if not llm_result.ok:
+        return {
+            "behaviorMode": "idle",
+            "targetPlayer": None,
+            "targetRoom": request.botRoom if hasattr(request, "botRoom") else None,
+            "shouldChase": False,
+            "reason": llm_result.stage or "llm_failed",
+            "llmDebug": _llm_debug_from_result(
+                llm_result,
+                llm_attempted=True,
+                llm_used=False,
+                fallback_reason=llm_result.stage or llm_result.errorType or "llm_failed",
+            ),
+        }
+
+    payload = _load_json(llm_result.text)
     if not payload:
         return None
 
     result, _error = _validate_decide_payload(request, payload, allow_repair=True)
+    if result is None:
+        return None
+
+    result["llmDebug"] = _llm_debug_from_result(
+        llm_result,
+        llm_attempted=True,
+        llm_used=True,
+        fallback_reason="",
+        stage="json_repaired" if payload else llm_result.stage,
+    )
     return result
 
 
@@ -735,15 +799,15 @@ async def validate_decide_behavior_with_agent(
         return None, None
 
     if not _llm_ready():
-        return None, "missing_llm_key"
+        return None, "missing_api_key"
 
     bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await _call_llm(_build_decide_prompt(request, bot_state))
+    llm_result = await _call_llm_result(_build_decide_prompt(request, bot_state))
 
-    if raw_text is None:
-        return None, "llm_call_failed"
+    if not llm_result.ok:
+        return None, llm_result.stage or llm_result.errorType or "llm_call_failed"
 
-    payload = _load_json(raw_text)
+    payload = _load_json(llm_result.text)
     if not payload:
         return None, "invalid_json"
 
@@ -825,52 +889,243 @@ def _clean_and_validate_messages(messages: list[str]) -> list[str] | None:
     return cleaned_messages
 
 
-async def generate_chat_with_agent(request: RespondRequest) -> dict[str, Any] | None:
-    """
-    Generate meeting chat using the LLM agent.
+def _repair_plain_text_chat_messages(raw_text: str | None) -> list[str] | None:
+    if not isinstance(raw_text, str):
+        return None
 
-    Returns:
-    {
-        "messages": [...],
-        "reason": "..."
+    text = _strip_code_fence(raw_text).strip()
+    if not text:
+        return []
+
+    parts = [part.strip() for part in text.split("|") if part.strip()]
+    if len(parts) <= 1:
+        parts = [part.strip() for part in re.split(r"[\r\n]+", text) if part.strip()]
+    if len(parts) <= 1:
+        parts = [text]
+
+    cleaned_messages: list[str] = []
+    for raw in parts[:CHAT_MAX_MESSAGES]:
+        candidate = clean_message(raw.replace("|", " "))
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        if not candidate:
+            continue
+        if len(candidate) > CHAT_MAX_CHARS:
+            candidate = candidate[:CHAT_MAX_CHARS].rstrip()
+        if _has_forbidden_chat_content(candidate) or is_bad_bot_output(candidate):
+            return None
+        cleaned_messages.append(candidate)
+
+    return cleaned_messages if cleaned_messages else None
+
+
+def _llm_debug_from_result(
+    result: llm_adapter.LLMResult,
+    *,
+    llm_attempted: bool,
+    llm_used: bool,
+    fallback_reason: str = "",
+    stage: str | None = None,
+) -> dict[str, Any]:
+    failure_chain = result.failureChain or []
+    return {
+        "llmAttempted": llm_attempted,
+        "llmUsed": llm_used,
+        "fallbackReason": fallback_reason,
+        "provider": result.provider,
+        "providerUsed": result.provider,
+        "model": result.model,
+        "modelUsed": result.model,
+        "keyIdUsed": result.keyId,
+        "stage": stage or result.stage,
+        "statusCode": result.statusCode,
+        "latencyMs": result.latencyMs,
+        "rawPreview": result.rawPreview,
+        "errorType": result.errorType,
+        "errorMessage": result.errorMessage,
+        "attemptCount": result.attemptCount,
+        "failureChain": failure_chain,
     }
 
-    Can return {"messages": [], "reason": "..."} for intentional silence.
-    Returns None if unsafe/invalid so the rules fallback can respond instead.
-    """
+
+async def generate_chat_with_agent(
+    request: RespondRequest,
+    *,
+    intent: str | None = None,
+    targeted_player: str | None = None,
+    is_targeted: bool = False,
+    event_context: dict | None = None,
+) -> dict[str, Any] | None:
+    """Generate meeting chat using the LLM agent with structured diagnostics."""
     if not _ai_mode_enabled() or not _llm_ready():
         return None
 
     bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await _call_llm(_build_chat_prompt(request, bot_state))
-    payload = _load_json(raw_text)
+    # Classify situation locally and build a compact prompt via the budgeter
+    situation = prompt_budgeter.classify_chat_situation(request, bot_state=bot_state)
 
-    if not payload:
-        return None
+    # If local rules decide silence, avoid calling LLM to save tokens.
+    if situation.responseNeed == "stay_silent":
+        return {
+            "messages": [],
+            "reason": "local_silence",
+            "llmDebug": {
+                "llmAttempted": False,
+                "llmUsed": False,
+                "fallbackReason": "local_silence",
+                "provider": config.LLM_PROVIDER,
+                "model": config.GROQ_MODEL,
+                "stage": "local_silence",
+                "statusCode": None,
+                "latencyMs": 0,
+                "rawPreview": "",
+                "errorType": "",
+                "errorMessage": "",
+                "attemptCount": 0,
+                "promptChars": 0,
+                "recentChatSent": situation.recentRelevantChat,
+                "promptMode": situation.promptMode,
+                "classification": situation.classification,
+                "intent": situation.intent,
+                "targetedPlayer": situation.targetedPlayer,
+            },
+        }
 
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        reason = "agent chat decision"
+    prompt = prompt_budgeter.build_compact_chat_prompt(request, situation, bot_state=bot_state)
+    prompt_chars = prompt_budgeter.estimate_prompt_chars(prompt)
 
-    if _has_forbidden_chat_content(reason):
-        reason = "safe chat decision"
+    # Allow chat model selection override so small-model chat can be used by default.
+    original_groq_model = getattr(config, "GROQ_MODEL", None)
+    try:
+        if not getattr(config, "LLM_USE_70B_FOR_CHAT", False):
+            config.GROQ_MODEL = getattr(config, "GROQ_CHAT_MODEL", config.GROQ_MODEL)
+        # Prefer a test-time monkeypatched generator on the respond module if present.
+        # In production, route Groq calls through the key failover router.
+        llm_result = None
+        try:
+            from src.api.endpoints import respond as _respond_module
 
-    messages_raw = _normalize_messages(payload.get("messages"))
-    if messages_raw is None:
-        return None
+            public_fn = getattr(_respond_module, "generate_chat_response", None)
+            if public_fn and callable(public_fn) and public_fn is not llm_adapter.generate_chat_response:
+                maybe = await public_fn(prompt)
+                llm_result = llm_adapter._coerce_public_call_result(maybe)
+        except Exception:
+            llm_result = None
 
-    messages = _clean_and_validate_messages(messages_raw)
-    if messages is None:
-        return None
+        if llm_result is None:
+            llm_result = await _call_llm_result(prompt)
+    finally:
+        if original_groq_model is not None:
+            config.GROQ_MODEL = original_groq_model
 
-    # Silence is allowed in V4 if the model intentionally chooses it.
-    reason = reason.strip()
-    if len(reason) > 180:
-        reason = reason[:177].rstrip() + "..."
+    if not llm_result.ok:
+        fallback_reason = llm_result.stage or llm_result.errorType or "llm_failed"
+        if llm_result.provider == "groq" and llm_result.failureChain:
+            fallback_reason = "all_groq_keys_failed"
+        return {
+            "messages": [],
+            "reason": fallback_reason,
+            "llmDebug": _llm_debug_from_result(
+                llm_result,
+                llm_attempted=True,
+                llm_used=False,
+                fallback_reason=fallback_reason,
+            ),
+        }
 
+    payload = _load_json(llm_result.text)
+    if payload:
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            reason = "llm_chat_response"
+        if _has_forbidden_chat_content(reason):
+            reason = "safe chat decision"
+        reason = reason.strip()
+        if len(reason) > 180:
+            reason = reason[:177].rstrip() + "..."
+
+        messages_raw = payload.get("messages")
+        if messages_raw is None and isinstance(payload.get("message"), str):
+            messages_raw = payload.get("message")
+
+        messages_values = _normalize_messages(messages_raw)
+        if messages_values is not None:
+            messages = _clean_and_validate_messages(messages_values)
+            if messages is not None:
+                debug = _llm_debug_from_result(
+                    llm_result,
+                    llm_attempted=True,
+                    llm_used=bool(messages),
+                    fallback_reason="",
+                    stage="json_repaired" if messages_values != messages else llm_result.stage,
+                )
+                # Add prompt budgeting stats
+                debug.update({
+                    "promptChars": prompt_chars,
+                    "recentChatSent": situation.recentRelevantChat,
+                    "promptMode": situation.promptMode,
+                    "classification": situation.classification,
+                    "intent": situation.intent,
+                    "targetedPlayer": situation.targetedPlayer,
+                })
+                return {
+                    "messages": messages,
+                    "reason": reason,
+                    "llmDebug": debug,
+                }
+            return {
+                "messages": [],
+                "reason": "unsafe_message",
+                "llmDebug": _llm_debug_from_result(
+                    llm_result,
+                    llm_attempted=True,
+                    llm_used=False,
+                    fallback_reason="unsafe_message",
+                    stage="unsafe_message",
+                ),
+            }
+
+    repaired_messages = _repair_plain_text_chat_messages(llm_result.text)
+    if repaired_messages is not None:
+        debug = _llm_debug_from_result(
+            llm_result,
+            llm_attempted=True,
+            llm_used=True,
+            fallback_reason="",
+            stage="plain_text_repaired",
+        )
+        debug.update({
+            "promptChars": prompt_chars,
+            "recentChatSent": situation.recentRelevantChat,
+            "promptMode": situation.promptMode,
+            "classification": situation.classification,
+            "intent": situation.intent,
+            "targetedPlayer": situation.targetedPlayer,
+        })
+        return {
+            "messages": repaired_messages,
+            "reason": "plain_text_llm_output",
+            "llmDebug": debug,
+        }
+
+    debug = _llm_debug_from_result(
+        llm_result,
+        llm_attempted=True,
+        llm_used=False,
+        fallback_reason="invalid_json",
+        stage=llm_result.stage or "invalid_json",
+    )
+    debug.update({
+        "promptChars": prompt_chars,
+        "recentChatSent": situation.recentRelevantChat,
+        "promptMode": situation.promptMode,
+        "classification": situation.classification,
+        "intent": situation.intent,
+        "targetedPlayer": situation.targetedPlayer,
+    })
     return {
-        "messages": messages,
-        "reason": reason,
+        "messages": [],
+        "reason": "invalid_json",
+        "llmDebug": debug,
     }
 
 
@@ -984,15 +1239,55 @@ async def decide_vote_with_agent(request: VoteRequest) -> dict[str, Any] | None:
 
     Returns None if agent is unavailable or unsafe, so endpoint fallback can choose.
     """
-    if not _ai_mode_enabled() or not _llm_ready():
+    if not _ai_mode_enabled():
         return None
 
-    bot_state = get_bot_state(request.matchId, request.botId) or {}
-    raw_text = await _call_llm(_build_vote_prompt(request, bot_state))
-    payload = _load_json(raw_text)
+    if not _llm_ready():
+        return {
+            "voteTarget": None,
+            "reason": "missing_api_key",
+            "llmDebug": _llm_debug_from_result(
+                llm_adapter.LLMResult(
+                    ok=False,
+                    provider=str(getattr(config, "LLM_PROVIDER", "groq")).strip().lower() or "groq",
+                    model=config.GROQ_MODEL if str(getattr(config, "LLM_PROVIDER", "groq")).strip().lower() == "groq" else config.GEMINI_MODEL,
+                    stage="missing_api_key",
+                    errorType="MissingAPIKey",
+                    errorMessage="LLM key is not configured.",
+                    llmUsed=False,
+                ),
+                llm_attempted=True,
+                llm_used=False,
+                fallback_reason="missing_api_key",
+            ),
+        }
 
+    bot_state = get_bot_state(request.matchId, request.botId) or {}
+    llm_result = await _call_llm_result(_build_vote_prompt(request, bot_state))
+    if not llm_result.ok:
+        return {
+            "voteTarget": None,
+            "reason": llm_result.stage or "llm_failed",
+            "llmDebug": _llm_debug_from_result(
+                llm_result,
+                llm_attempted=True,
+                llm_used=False,
+                fallback_reason=llm_result.stage or llm_result.errorType or "llm_failed",
+            ),
+        }
+
+    payload = _load_json(llm_result.text)
     if not payload:
         return None
 
     result, _error = _validate_vote_payload(request, payload, allow_repair=False)
+    if result is None:
+        return None
+
+    result["llmDebug"] = _llm_debug_from_result(
+        llm_result,
+        llm_attempted=True,
+        llm_used=True,
+        fallback_reason="",
+    )
     return result

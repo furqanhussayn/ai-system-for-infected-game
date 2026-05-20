@@ -82,6 +82,8 @@ class RespondRequest(ApiModel):
     botId: str
     botName: str = ""
     personality: Optional[str] = None
+    # Optional language hint for generated chat output. Examples: 'en', 'roman_urdu'
+    language: Optional[str] = "en"
     message: str = ""
     latestMessage: Optional[ChatMessageDto] = None
     recentChat: list[ChatMessageDto] = Field(default_factory=list)

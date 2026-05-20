@@ -125,6 +125,7 @@ def build_meeting_chat_prompt(
     targeted_player: str | None = None,
     is_targeted: bool = False,
     bot_state: dict | None = None,
+    event_context: dict | None = None,
 ) -> str:
     """
     Build a prompt for LLM-based meeting chat generation.
@@ -172,6 +173,17 @@ def build_meeting_chat_prompt(
 
     latest_message = (req.message or "").strip()
 
+    # Optional language hint (e.g., 'en', 'roman_urdu')
+    language = _safe_get(req, "language", "en").strip().lower()
+    language_instruction = ""
+    if language in ("roman_urdu", "roman-urdu", "ur_roman", "romanurdu"):
+        language_instruction = (
+            "Language instruction:\n"
+            "- Produce your chat messages in Roman Urdu (Latin script), using casual phonetic spellings.\n"
+            "- Example style: istarhan jistarhan main abhi baat kr rha hun\n"
+            "- Keep lowercase and other chat style rules still apply.\n"
+        )
+
     match_pressure_note = _build_match_pressure_note(
         phase=phase,
         wave=wave,
@@ -202,7 +214,8 @@ def build_meeting_chat_prompt(
         target_note = (
             "The latest message does not clearly target one player. "
             "Only respond if a real player would naturally jump in. "
-            "Silence is allowed and often better."
+            "If it is a neutral question about the round, answer it with a short believable in-game claim before redirecting. "
+            "Silence is allowed and often better when no one is really asking for a reply."
         )
 
     # ---------------------------------------------------------------------
@@ -300,6 +313,7 @@ def build_meeting_chat_prompt(
         "- First decide if a real player would reply at all.\n"
         "- If the message is not about you, do not make it about you.\n"
         "- If accused, respond with one believable human angle: route, proof, denial, or redirect.\n"
+        "- If someone asks a neutral meeting question, answer it first with a short believable claim about what you saw, did, or where you were.\n"
         "- If someone else is accused, either ask for proof, agree shortly, or stay silent.\n"
         "- If asked who is infected, be uncertain and suspicious, not confident.\n"
         "- If called bot/AI/real, act annoyed or confused, but never discuss AI.\n"
@@ -335,6 +349,10 @@ def build_meeting_chat_prompt(
         "- Do not reuse the latest player's exact wording.\n"
         "- Do not keep saying 'why me tho'. Use varied reactions.\n"
         "- Do not repeat a message already visible in recent chat.\n"
+        "- Do not repeat any line already used in this turn.\n"
+        "- If another bot already replied this turn, take a different angle.\n"
+        "- One bot may ask for proof, but another should agree, deflect, accuse, or stay quiet instead.\n"
+        "- Do not reuse generic phrases like 'what proof do u have', 'yeah thats weird', 'why me tho', or 'nah i was doing wires' too often.\n"
         "- Do not produce the same phrase twice in one response.\n"
         "- Prefer specific short lines over generic ones.\n"
         "- If you mention a room, use it naturally as a fake route, not as a detailed report.\n"
@@ -447,6 +465,24 @@ def build_meeting_chat_prompt(
         "No markdown. No labels. No explanation. No quotes around the answer."
     )
 
+    event_context = event_context or {}
+    used_messages = event_context.get("usedMessages", []) or []
+    used_message_keys = event_context.get("usedMessageKeys", []) or []
+    used_intents = event_context.get("usedIntents", []) or []
+    used_openers = event_context.get("usedOpeners", []) or []
+    latest_human_context = str(event_context.get("latestHumanMessage", "") or "").strip()
+    recent_context_texts = event_context.get("recentChatTexts", []) or []
+
+    event_context_rules = (
+        "Turn context for this bot:\n"
+        f"- Used messages so far: {used_messages}\n"
+        f"- Used message keys so far: {used_message_keys}\n"
+        f"- Used intents so far: {used_intents}\n"
+        f"- Used openers so far: {used_openers}\n"
+        f"- Latest human message: {latest_human_context or 'none'}\n"
+        f"- Recent chat texts: {recent_context_texts}\n"
+    )
+
     return (
         f"You are controlling {bot_id} ({bot_label}) in the MEETING phase of "
         "a mobile social deduction horror game called THE INFECTED.\n\n"
@@ -465,12 +501,14 @@ def build_meeting_chat_prompt(
         f"{reasoning_rules}\n"
         f"{atmosphere_rules}\n"
         f"{repetition_rules}\n"
+        f"{event_context_rules}\n"
         f"{forbidden_rules}\n"
         f"{style_rules}\n"
         f"{good_examples}\n"
         f"{bad_examples}\n"
         f"{response_logic}\n"
         f"{output_rules}\n\n"
+        f"{language_instruction}\n"
         "Current chat context:\n"
         f"Latest player message:\n{latest_message}\n\n"
         f"Recent chat:\n{recent_chat}\n\n"

@@ -22,6 +22,8 @@ from fastapi.testclient import TestClient
 
 from src.main import app
 from src.core import config
+from src.api.endpoints import chat_lab as chat_lab_module
+from src.agents.meeting_orchestrator import ResponderPlan
 from src.services import llm_adapter as llm_adapter_module
 
 client = TestClient(app)
@@ -356,6 +358,105 @@ def test_logic_for_not_targeted_bots_not_acting_accused(monkeypatch):
 
     debug = data.get("debug", {})
     assert debug.get("targetedPlayer") == "player_3"
+
+
+def test_chat_lab_replaces_duplicate_llm_lines(monkeypatch):
+    """
+    If player_2 and player_3 both produce the same LLM line, Chat Lab must rewrite one.
+    """
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+    client.post("/chat_lab/reset")
+
+    async def duplicate_llm(prompt: str):
+        return "what proof do u have|what proof do u have"
+
+    def fake_select_responders(*args, **kwargs):
+        plans = [
+            ResponderPlan(botId="player_2", intent="deflect", priority=1, reason="test plan", isDirectTarget=True),
+            ResponderPlan(botId="player_3", intent="framer", priority=2, reason="test plan", isDirectTarget=False),
+        ]
+        debug = {
+            "classification": "direct_accusation",
+            "targetedPlayer": "player_2",
+            "selectedResponders": ["player_2", "player_3"],
+            "forcedResponder": None,
+            "silenceReason": None,
+            "selectionReasons": ["test"],
+            "diversityApplied": False,
+        }
+        return plans, debug
+
+    monkeypatch.setattr(chat_lab_module, "generate_chat_response", duplicate_llm)
+    monkeypatch.setattr(chat_lab_module, "select_responders", fake_select_responders)
+
+    r = client.post(
+        "/chat_lab/send",
+        json={
+            "message": "player 2 is sus",
+            "forceResponse": True,
+            "multiBot": True,
+            "debug": True,
+        },
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    texts = [event["text"] for event in data.get("botEvents", [])]
+    assert texts
+    assert len(texts) == len(set(texts)), texts
+
+    debug = data.get("debug", {})
+    assert debug.get("duplicateFilteredCount", 0) >= 1
+    assert debug.get("duplicateReplacedCount", 0) >= 1
+    assert debug.get("diversityApplied") is True
+
+
+def test_chat_lab_replaces_near_duplicate_proof_questions(monkeypatch):
+    """
+    If both bots start with the same proof-question shape, one should change angle.
+    """
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+    client.post("/chat_lab/reset")
+
+    async def near_duplicate_llm(prompt: str):
+        return "what proof do u have|where is the proof"
+
+    def fake_select_responders(*args, **kwargs):
+        plans = [
+            ResponderPlan(botId="player_2", intent="deflect", priority=1, reason="test plan", isDirectTarget=True),
+            ResponderPlan(botId="player_3", intent="framer", priority=2, reason="test plan", isDirectTarget=False),
+        ]
+        debug = {
+            "classification": "direct_accusation",
+            "targetedPlayer": "player_2",
+            "selectedResponders": ["player_2", "player_3"],
+            "forcedResponder": None,
+            "silenceReason": None,
+            "selectionReasons": ["test"],
+            "diversityApplied": False,
+        }
+        return plans, debug
+
+    monkeypatch.setattr(chat_lab_module, "generate_chat_response", near_duplicate_llm)
+    monkeypatch.setattr(chat_lab_module, "select_responders", fake_select_responders)
+
+    r = client.post(
+        "/chat_lab/send",
+        json={
+            "message": "player 2 is sus",
+            "forceResponse": True,
+            "multiBot": True,
+            "debug": True,
+        },
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    texts = [event["text"] for event in data.get("botEvents", [])]
+    assert texts
+    assert len(texts) == len(set(texts)), texts
 
 
 def test_empty_message_rejected():

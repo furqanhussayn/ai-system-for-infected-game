@@ -59,23 +59,52 @@ def _rule_based_decision(req: DecideRequest) -> tuple[dict, str]:
 @router.post("", response_model=DecideActionResponse)
 async def decide(req: DecideRequest):
     agent_decision, validation_error = await validate_decide_behavior_with_agent(req)
-    if agent_decision is not None:
+    agent_llm_used = bool(agent_decision and agent_decision.get("llmDebug", {}).get("llmUsed"))
+    if agent_decision is not None and agent_llm_used:
+        llm_debug = agent_decision.get("llmDebug", {}) or {}
         decision = {
             "botId": req.botId,
             **agent_decision,
             "trace": agent_decision["reason"],
         }
+        decision["trace"] = " | ".join(
+            part
+            for part in [
+                f"reason={agent_decision['reason']}",
+                f"llm_attempted={llm_debug.get('llmAttempted', False)}",
+                f"llm_used={llm_debug.get('llmUsed', False)}",
+                f"fallback_reason={llm_debug.get('fallbackReason', '')}",
+                f"provider={llm_debug.get('provider', '')}",
+                f"model={llm_debug.get('model', '')}",
+                f"stage={llm_debug.get('stage', '')}",
+                f"statusCode={llm_debug.get('statusCode', '')}",
+                f"latencyMs={llm_debug.get('latencyMs', 0)}",
+            ]
+            if part is not None
+        )
         add_trace(
             req.matchId,
             req.botId,
             "decide_action",
             agent_decision["behaviorMode"],
-            agent_decision["reason"],
+            decision["trace"],
             "/decide_action:agent",
             input_data=req.model_dump(by_alias=True),
             output_data=decision,
         )
         return decision
+
+    if agent_decision is not None and not agent_llm_used:
+        llm_debug = agent_decision.get("llmDebug", {}) or {}
+        fallback_reason = llm_debug.get("fallbackReason") or validation_error or agent_decision.get("reason", "llm_failed")
+        add_trace(
+            req.matchId,
+            req.botId,
+            "agent_decide_action_failed",
+            "rules_fallback",
+            f"fallback_reason={fallback_reason} | stage={llm_debug.get('stage', '')} | statusCode={llm_debug.get('statusCode', '')}",
+            "/decide_action:agent_validation_failed",
+        )
 
     if config.AI_MODE == "agent" and validation_error:
         add_trace(
@@ -83,7 +112,7 @@ async def decide(req: DecideRequest):
             req.botId,
             "agent_decide_action_failed",
             "rules_fallback",
-            validation_error,
+            f"fallback_reason={validation_error}",
             "/decide_action:agent_validation_failed",
         )
 

@@ -4,8 +4,13 @@ import uuid as _uuid_module
 from fastapi.testclient import TestClient
 from src.main import app
 from src.core import config
+from src.core.model_choice import normalize_provider
 from src.services import llm_adapter as llm_adapter_module
+from src.services.llm_adapter import LLMResult
+from src.services import llm_router as llm_router_module
 from src.api.endpoints import respond as respond_module
+from src.api.endpoints import chat_lab as chat_lab_module
+from src.api.endpoints import demo as demo_module
 
 client = TestClient(app)
 
@@ -68,23 +73,34 @@ def test_landing_page():
 
 
 def test_llm_status_hides_api_key(monkeypatch):
-    monkeypatch.setattr(config, "AI_MODE", "rules")
+    monkeypatch.setattr(config, "AI_MODE", "agent")
     monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "CHAT_PROVIDER_ORDER", ["gemini", "groq_key_1", "groq_key_2", "groq_key_3", "rules"])
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-secret")
+    monkeypatch.setattr(config, "GEMINI_CHAT_MODEL", "gemini-3.1-flash-lite")
     monkeypatch.setattr(config, "GROQ_API_KEY", "super-secret-key")
-    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
-    monkeypatch.setattr(config, "GROQ_MODEL", "llama-3.3-70b-versatile")
+    monkeypatch.setattr(config, "GROQ_API_KEY_2", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY_3", "")
+    monkeypatch.setattr(config, "GROQ_CHAT_MODEL", "llama-3.1-8b-instant")
 
     r = client.get("/llm/status")
     assert r.status_code == 200
     data = r.json()
-    assert data == {
-        "aiMode": "rules",
-        "agentDecisionEnabled": False,
-        "provider": "groq",
-        "hasGroqKey": True,
-        "hasGeminiKey": False,
-    }
+    assert data["aiMode"] == "agent"
+    assert data["agentDecisionEnabled"] is True
+    assert data["chatProviderOrder"][0] == "gemini"
+    assert data["provider"] == "gemini"
+    assert data["model"] == "gemini-3.1-flash-lite"
+    assert data["hasGroqKey"] is True
+    assert data["groqKeyFailoverEnabled"] is True
+    assert data["gemini"]["configured"] is True
+    assert data["groq"]["keyCount"] == 1
+    assert data["groqKeyPool"]["keyCount"] == 1
+    assert data["hasGeminiKey"] is True
+    assert data["timeoutSeconds"] == 8
+    assert data["maxRetries"] == 1
     assert "super-secret-key" not in r.text
+    assert "gemini-secret" not in r.text
 
 
 def test_ai_mode_rules_does_not_call_groq(monkeypatch):
@@ -122,6 +138,515 @@ def test_ai_mode_rules_does_not_call_groq(monkeypatch):
         "recentChat": [{"sender": "player_1", "text": "player 2 is sus"}],
     }
     assert client.post("/vote", json=vote_payload).status_code == 200
+
+
+def test_question_prompt_gets_answer_first_response(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "rules")
+    monkeypatch.setattr(respond_module.random, "random", lambda: 0.0)
+
+    r = client.post(
+        "/respond",
+        json={
+            "matchId": "QUESTION_PROMPT",
+            "phase": "Meeting",
+            "wave": 2,
+            "cycle": 1,
+            "botId": "player_2",
+            "botName": "Player 2",
+            "personality": "crowd_follower",
+            "message": "what task progress h?",
+            "latestMessage": {
+                "sender": "player_1",
+                "senderName": "Player 1",
+                "text": "what task progress h?",
+            },
+            "recentChat": [
+                {"sender": "player_1", "senderName": "Player 1", "text": "what task progress h?"}
+            ],
+            "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+            "humanPlayers": ["player_1", "player_3", "player_4"],
+            "infectedPlayers": ["player_2"],
+        },
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["respond"] is True
+    assert data["messages"]
+    joined = " | ".join(data["messages"]).lower()
+    assert any(token in joined for token in ("task", "wave", "room", "was at", "doing tasks", "saw"))
+    assert "question_prompt" in data["trace"]
+
+
+def test_groq_llm_response_skips_fallback_for_general_chat(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def valid(prompt: str):
+        return "i was at electrical|task progress looked fine to me"
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("fallback should not be used when LLM responds")
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", valid)
+    monkeypatch.setattr(respond_module, "generate_human_fallback", fail_if_called)
+
+    response = client.post(
+        "/respond",
+        json={
+            "matchId": "GROQ_GENERAL_CHAT",
+            "phase": "Meeting",
+            "wave": 2,
+            "cycle": 1,
+            "botId": "player_2",
+            "botName": "Player 2",
+            "personality": "crowd_follower",
+            "message": "what task progress h?",
+            "latestMessage": {
+                "sender": "player_1",
+                "senderName": "Player 1",
+                "text": "what task progress h?",
+            },
+            "recentChat": [
+                {"sender": "player_1", "senderName": "Player 1", "text": "what task progress h?"}
+            ],
+            "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+            "humanPlayers": ["player_1", "player_3", "player_4"],
+            "infectedPlayers": ["player_2"],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["messages"] == ["i was at electrical", "task progress looked fine to me"]
+    assert "llm_used=True" in data["trace"]
+    assert "fallback_used=False" in data["trace"]
+
+
+def test_respond_avoids_recent_chat_repetition(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+
+    async def duplicate(prompt: str):
+        return "what proof do u have|what proof do u have"
+
+    monkeypatch.setattr(respond_module, "generate_chat_response", duplicate)
+
+    response = client.post(
+        "/respond",
+        json={
+            "matchId": "RESPOND_NO_REPEAT",
+            "phase": "Meeting",
+            "wave": 2,
+            "cycle": 1,
+            "botId": "player_2",
+            "botName": "Player 2",
+            "personality": "deflector",
+            "message": "player 2 is sus",
+            "latestMessage": {
+                "sender": "player_1",
+                "senderName": "Player 1",
+                "text": "player 2 is sus",
+            },
+            "recentChat": [
+                {"sender": "player_1", "senderName": "Player 1", "text": "what proof do u have"}
+            ],
+            "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+            "humanPlayers": ["player_1", "player_3", "player_4"],
+            "infectedPlayers": ["player_2"],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["botId"] == "player_2"
+    assert isinstance(data["messages"], list)
+    assert data["messages"]
+    joined = " | ".join(data["messages"]).lower()
+    assert "what proof do u have" not in joined
+    assert "backend" not in joined
+    assert "system prompt" not in joined
+
+
+def test_llm_success_json_sets_llm_used(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+
+    async def success(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text='{"messages":["nah i was doing wires"],"reason":"ok"}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"messages":["nah i was doing wires"],"reason":"ok"}',
+            latencyMs=12,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", success)
+    response = client.post(
+        "/respond",
+        json={
+            "matchId": "LLM_SUCCESS_JSON",
+            "phase": "Meeting",
+            "wave": 2,
+            "cycle": 1,
+            "botId": "player_2",
+            "botName": "Player 2",
+            "personality": "deflector",
+            "message": "player 2 is sus",
+            "latestMessage": {"sender": "player_1", "senderName": "Player 1", "text": "player 2 is sus"},
+            "recentChat": [{"sender": "player_1", "senderName": "Player 1", "text": "player 2 is sus"}],
+            "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+            "humanPlayers": ["player_1", "player_3", "player_4"],
+            "infectedPlayers": ["player_2"],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["respond"] is True
+    assert data["messages"] == ["nah i was doing wires"]
+    assert "llm_used=True" in data["trace"]
+    assert "fallback_used=False" in data["trace"]
+
+
+def test_llm_plain_text_repair(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+
+    async def plain_text(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text="nah i was doing wires",
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview="nah i was doing wires",
+            latencyMs=15,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", plain_text)
+    data = _fresh_respond("player_2 is sus", match="LLM_PLAIN_TEXT")
+    assert data["messages"] == ["nah i was doing wires"]
+    assert "stage=plain_text_repaired" in data["trace"]
+    assert "llm_used=True" in data["trace"]
+
+
+def test_llm_invalid_json_unsafe_falls_back(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+
+    async def unsafe(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text='{"messages":["as an AI I cannot help"]}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"messages":["as an AI I cannot help"]}',
+            latencyMs=11,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", unsafe)
+    data = _fresh_respond("player_2 is sus", match="LLM_UNSAFE_JSON")
+    assert data["respond"] is True
+    assert data["messages"]
+    assert "fallback_used=True" in data["trace"]
+    assert "unsafe_message" in data["trace"] or "invalid_json" in data["trace"]
+
+
+def test_llm_invalid_api_key_is_visible(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+
+    async def invalid_key(prompt: str, **kwargs):
+        return LLMResult(
+            ok=False,
+            text="",
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=401,
+            errorType="http_status_error",
+            errorMessage="Unauthorized",
+            stage="invalid_api_key",
+            rawPreview="unauthorized",
+            latencyMs=9,
+            attemptCount=1,
+            llmUsed=False,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", invalid_key)
+    data = _fresh_respond("player_2 is sus", match="LLM_INVALID_KEY")
+    assert data["respond"] is True
+    assert "fallback_used=True" in data["trace"]
+    assert "invalid_api_key" in data["trace"]
+    assert "statusCode=401" in data["trace"]
+
+
+def test_llm_rate_limited_retries_and_succeeds(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+    monkeypatch.setattr(config, "GROQ_API_KEY_2", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY_3", "")
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    load_groq_keys()
+    mark_key_success("groq_key_1")
+    mark_key_success("groq_key_2")
+    mark_key_success("groq_key_3")
+
+    calls = {"count": 0}
+
+    async def rate_limited_then_success(prompt: str, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return LLMResult(
+                ok=False,
+                text="",
+                provider="groq",
+                model="llama-3.3-70b-versatile",
+                statusCode=429,
+                errorType="http_status_error",
+                errorMessage="Too Many Requests",
+                stage="rate_limited",
+                rawPreview="too many requests",
+                latencyMs=7,
+                attemptCount=1,
+                llmUsed=False,
+            )
+        return LLMResult(
+            ok=True,
+            text='{"messages":["what proof do u have"],"reason":"ok"}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"messages":["what proof do u have"],"reason":"ok"}',
+            latencyMs=10,
+            attemptCount=2,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", rate_limited_then_success)
+    data = _fresh_respond("player_2 is sus", match="LLM_RATE_LIMIT")
+    assert data["respond"] is True
+    assert calls["count"] >= 1
+    assert "llm_used=True" in data["trace"] or "fallback_used=True" in data["trace"]
+
+
+def test_chat_lab_and_respond_share_llm_path(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+    monkeypatch.setattr(config, "GROQ_API_KEY_2", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY_3", "")
+    from src.services.gemini_adapter import mark_gemini_success
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    mark_gemini_success()
+    load_groq_keys()
+    mark_key_success("groq_key_1")
+    mark_key_success("groq_key_2")
+    mark_key_success("groq_key_3")
+
+    async def shared_success(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text='{"messages":["what proof do u have"],"reason":"ok"}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"messages":["what proof do u have"],"reason":"ok"}',
+            latencyMs=10,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", shared_success)
+    client.post("/chat_lab/reset")
+    chat_lab_response = client.post("/chat_lab/send", json={"message": "player_2 is sus", "forceResponse": True, "multiBot": True, "debug": True})
+    respond_response = client.post(
+        "/respond",
+        json={
+            "matchId": "SHARED_LLM_PATH",
+            "phase": "Meeting",
+            "wave": 2,
+            "cycle": 1,
+            "botId": "player_2",
+            "botName": "Player 2",
+            "personality": "deflector",
+            "message": "player_2 is sus",
+            "latestMessage": {"sender": "player_1", "senderName": "Player 1", "text": "player_2 is sus"},
+            "recentChat": [{"sender": "player_1", "senderName": "Player 1", "text": "player_2 is sus"}],
+            "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
+            "humanPlayers": ["player_1", "player_3", "player_4"],
+            "infectedPlayers": ["player_2"],
+        },
+    )
+    assert chat_lab_response.status_code == 200
+    assert respond_response.status_code == 200
+    assert chat_lab_response.json()["debug"]["llmUsed"] is True
+    assert respond_response.json()["respond"] is True
+    assert "llm_used=True" in respond_response.json()["trace"]
+
+
+def test_agent_demo_trace_refreshes_with_llm(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "test-primary-key")
+    monkeypatch.setattr(config, "GROQ_API_KEY_2", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY_3", "")
+    from src.services.gemini_adapter import mark_gemini_success
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    mark_gemini_success()
+    load_groq_keys()
+    mark_key_success("groq_key_1")
+    mark_key_success("groq_key_2")
+    mark_key_success("groq_key_3")
+
+    async def demo_success(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text='{"messages":["nah i was doing wires"],"reason":"ok"}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"messages":["nah i was doing wires"],"reason":"ok"}',
+            latencyMs=8,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", demo_success)
+    response = client.post("/demo/agent_quick/AGENT_ROOM", follow_redirects=False)
+    assert response.status_code in {303, 200}
+    trace = client.get("/trace/AGENT_ROOM")
+    assert trace.status_code == 200
+    payload = trace.json()
+    assert payload["matchId"] == "AGENT_ROOM"
+    traces = payload.get("traces", [])
+    assert traces
+    assert any("llm_used=True" in (entry.get("trace", "") or "") or "stage=success" in (entry.get("trace", "") or "") for entry in traces)
+
+
+def test_llm_ping_endpoint_reports_status(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "ping-key")
+    monkeypatch.setattr(config, "GROQ_API_KEY_2", "")
+    monkeypatch.setattr(config, "GROQ_API_KEY_3", "")
+    from src.services.gemini_adapter import mark_gemini_success
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    mark_gemini_success()
+    load_groq_keys()
+    mark_key_success("groq_key_1")
+    mark_key_success("groq_key_2")
+    mark_key_success("groq_key_3")
+
+    async def ping_success(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text="ok",
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview="ok",
+            latencyMs=5,
+            attemptCount=1,
+            llmUsed=True,
+        )
+
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", ping_success)
+    response = client.get("/llm/ping")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["llmUsed"] is True
+    assert data["stage"] == "success"
+    assert data["keyId"] == "groq_key_1"
+
+
+def test_model_provider_switch_normalizes_aliases():
+    assert normalize_provider("gemini") == "gemini"
+    assert normalize_provider("google") == "gemini"
+    assert normalize_provider("groq") == "groq"
+    assert normalize_provider("unknown") == "gemini"
+
+
+def test_generate_chat_response_uses_selected_provider(monkeypatch):
+    monkeypatch.setattr(config, "AI_MODE", "groq")
+    monkeypatch.setattr(config, "GROQ_API_KEY", "groq-key")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setattr(config, "GROQ_MODEL", "groq-model")
+    monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-model")
+
+    class _FakeResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+            self.status_code = 200
+            self.text = str(payload)
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _FakeAsyncClient:
+        def __init__(self, payload: dict):
+            self.payload = payload
+            self.calls: list[tuple[str, dict | None, dict | None]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, headers=None, json=None):
+            self.calls.append((url, headers, json))
+            return _FakeResponse(self.payload)
+
+    groq_client = _FakeAsyncClient({"choices": [{"message": {"content": "groq ok"}}]})
+    monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(llm_adapter_module.httpx, "AsyncClient", lambda timeout=None: groq_client)
+    assert _run_async(llm_adapter_module.generate_chat_response("hello groq")) == "groq ok"
+    assert groq_client.calls[0][0].startswith("https://api.groq.com/")
+
+    gemini_client = _FakeAsyncClient({"candidates": [{"content": {"parts": [{"text": "gemini ok"}]}}]})
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_adapter_module.httpx, "AsyncClient", lambda timeout=None: gemini_client)
+    assert _run_async(llm_adapter_module.generate_chat_response("hello gemini")) == "gemini ok"
+    assert "generativelanguage.googleapis.com" in gemini_client.calls[0][0]
+
+
+def _run_async(coro):
+    import asyncio
+
+    return asyncio.run(coro)
 
 
 def test_groq_missing_key_falls_back_to_rules(monkeypatch):
@@ -188,12 +713,29 @@ def test_valid_groq_output_splits_into_messages(monkeypatch):
 
 def test_valid_agent_behavior_uses_llm_and_logs_source(monkeypatch):
     monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(config, "CHAT_PROVIDER_ORDER", ["groq_key_1", "rules"])
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    load_groq_keys()
+    mark_key_success("groq_key_1")
 
-    async def valid(prompt: str):
-        return '{"behaviorMode":"stealth_fake_task","targetPlayer":null,"targetRoom":"Electrical","shouldChase":false,"reason":"Early game, avoid suspicion."}'
+    async def valid(prompt: str, **kwargs):
+        return LLMResult(
+            ok=True,
+            text='{"behaviorMode":"stealth_fake_task","targetPlayer":null,"targetRoom":"Electrical","shouldChase":false,"reason":"Early game, avoid suspicion."}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            statusCode=200,
+            stage="success",
+            rawPreview='{"behaviorMode":"stealth_fake_task",...}',
+            latencyMs=8,
+            attemptCount=1,
+            llmUsed=True,
+        )
 
-    monkeypatch.setattr(llm_adapter_module, "generate_chat_response", valid)
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", valid)
+    monkeypatch.setattr(llm_router_module.llm_adapter, "generate_chat_response_result", valid)
 
     match = "AGENT_DECIDE_VALID"
     client.post(f"/demo/clear/{match}")
@@ -302,6 +844,7 @@ def test_valid_agent_vote_uses_llm_and_logs_source(monkeypatch):
 
 def test_invalid_agent_vote_falls_back(monkeypatch):
     monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
 
     async def invalid(prompt: str):
@@ -410,21 +953,32 @@ def test_agent_quick_requires_llm_key(monkeypatch):
 
 def test_agent_quick_runs_agent_flow_and_redirects(monkeypatch):
     monkeypatch.setattr(config, "AI_MODE", "agent")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     monkeypatch.setattr(config, "GROQ_API_KEY", "test-key")
+    from src.services.gemini_adapter import mark_gemini_success
+    from src.services.groq_key_pool import load_groq_keys, mark_key_success
+    mark_gemini_success()
+    load_groq_keys()
+    mark_key_success("groq_key_1")
+    mark_key_success("groq_key_2")
+    mark_key_success("groq_key_3")
 
-    async def agent_llm(prompt: str):
+    async def agent_llm(prompt: str, **kwargs):
         prompt_lower = prompt.lower()
         if "schema" in prompt_lower and "messages" in prompt_lower:
-            return '{"messages":["bro what??","i was doing wires"],"reason":"Bot was accused, so it denies naturally."}'
-        if "votetarget" in prompt_lower:
-            return '{"voteTarget":"player_1","reason":"Player 1 accused the bot."}'
-        if "humanplayers: ['player_1']" in prompt_lower:
-            return '{"behaviorMode":"final_hunt","targetPlayer":"player_1","targetRoom":"Exit Gate","shouldChase":true,"reason":"Only one human remains."}'
-        if "wave: 3" in prompt_lower:
-            return '{"behaviorMode":"aggressive_chase","targetPlayer":null,"targetRoom":"Generator","shouldChase":true,"reason":"Late game pressure."}'
-        return '{"behaviorMode":"stealth_fake_task","targetPlayer":null,"targetRoom":"Electrical","shouldChase":false,"reason":"Early game, avoid suspicion."}'
+            text = '{"messages":["bro what??","i was doing wires"],"reason":"Bot was accused, so it denies naturally."}'
+        elif "votetarget" in prompt_lower:
+            text = '{"voteTarget":"player_1","reason":"Player 1 accused the bot."}'
+        elif "humanplayers: ['player_1']" in prompt_lower:
+            text = '{"behaviorMode":"final_hunt","targetPlayer":"player_1","targetRoom":"Exit Gate","shouldChase":true,"reason":"Only one human remains."}'
+        elif "wave: 3" in prompt_lower:
+            text = '{"behaviorMode":"aggressive_chase","targetPlayer":null,"targetRoom":"Generator","shouldChase":true,"reason":"Late game pressure."}'
+        else:
+            text = '{"behaviorMode":"stealth_fake_task","targetPlayer":null,"targetRoom":"Electrical","shouldChase":false,"reason":"Early game, avoid suspicion."}'
+        return LLMResult(ok=True, text=text, provider="groq", model="llama-3.3-70b-versatile", statusCode=200, stage="success", rawPreview=text[:80], latencyMs=8, attemptCount=1, llmUsed=True)
 
-    monkeypatch.setattr(llm_adapter_module, "generate_chat_response", agent_llm)
+    monkeypatch.setattr(llm_adapter_module, "generate_chat_response_result", agent_llm)
+    monkeypatch.setattr(llm_router_module.llm_adapter, "generate_chat_response_result", agent_llm)
 
     match = "AGENT_ROOM"
     client.post(f"/demo/clear/{match}")

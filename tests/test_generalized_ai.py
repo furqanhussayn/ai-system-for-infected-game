@@ -219,6 +219,33 @@ def test_core_participant_builder_is_not_player_2_special_case(monkeypatch):
     assert debug["selectedResponders"] == ["player_3"]
 
 
+def test_question_prompt_selects_answer_first_intent(monkeypatch):
+    monkeypatch.setattr(orchestrator, "get_bot_state", lambda match_id, bot_id: {"personality": "crowd_follower"})
+    monkeypatch.setattr(orchestrator.random, "random", lambda: 0.0)
+    monkeypatch.setattr(orchestrator.random, "choice", lambda seq: seq[0])
+
+    request = SimpleNamespace(
+        matchId="GEN_QUESTION_PROMPT",
+        botId="player_2",
+        infectedPlayers=["player_2"],
+        alivePlayers=["player_1", "player_2", "player_3", "player_4"],
+        humanPlayers=["player_1", "player_3", "player_4"],
+        recentChat=[],
+    )
+
+    responder_plans, debug = orchestrator.select_responders(
+        "what task progress h?",
+        recent_chat=[],
+        request=request,
+        force_response=True,
+        debug=True,
+    )
+
+    assert debug["classification"] == "question_prompt"
+    assert responder_plans
+    assert any(plan.intent == "answer_question" for plan in responder_plans)
+
+
 def test_demo_sample_defaults_remain_available():
     response = client.post("/demo/run/DEMO_ROOM")
     assert response.status_code == 200

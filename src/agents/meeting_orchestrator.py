@@ -58,6 +58,7 @@ ALLOWED_INTENTS = frozenset({
     "deflect",
     "accuse_other",
     "ask_question",
+    "answer_question",
     "agree",
     "disagree",
     "confused",
@@ -529,6 +530,36 @@ def classify_latest_message(
             return "direct_accusation"
         return "direct_accusation"
 
+    if "?" in msg or _contains_any(
+        msg,
+        (
+            "what happened",
+            "what's happening",
+            "whats happening",
+            "what is happening",
+            "what plan",
+            "what's the plan",
+            "whats the plan",
+            "task progress",
+            "how many tasks",
+            "what wave",
+            "which wave",
+            "who saw",
+            "where exactly",
+            "what was the route",
+            "what room",
+            "did anyone see",
+            "anyone see",
+            "can someone explain",
+            "who was near",
+            "what did u see",
+            "what did you see",
+            "what were you doing",
+            "where were you",
+        ),
+    ):
+        return "question_prompt"
+
     if _contains_any(msg, _ASK_WHO_WORDS):
         return "asks_who_infected"
 
@@ -652,6 +683,9 @@ def select_responders(
                 return random.choice(["defend_self", "calm_down_short", "ask_question"])
             return random.choice(["third_party_opinion", "agree", "ask_question"])
 
+        if classification_name == "question_prompt":
+            return random.choice(["answer_question", "third_party_opinion", "agree"])
+
         if normalized == "quiet":
             return random.choice(["stay_out", "ask_question", "confused"])
         if normalized == "deflector":
@@ -750,7 +784,27 @@ def select_responders(
             )
 
     # -----------------------------------------------------------------------
-    # 3. General "who is infected / who sus" question.
+    # 3. General question that should get an answer-first response.
+    # -----------------------------------------------------------------------
+    elif classification == "question_prompt":
+        responder_count = random.choices([1, 2, 3], weights=[50, 35, 15])[0]
+        if force_response:
+            responder_count = max(1, responder_count)
+
+        pool = bots[:]
+        random.shuffle(pool)
+        pool.sort(key=lambda b: (b.talkativeness, b.confusion), reverse=True)
+
+        for idx, bot in enumerate(pool[:responder_count]):
+            personality = _normalize_personality(bot.personality)
+            if personality in ("crowd_follower", "panicker", "quiet") or random.random() < bot.talkativeness:
+                intent = _intent_from_personality(personality, direct_target=False, classification_name=classification)
+                if intent == "third_party_opinion" and random.random() < 0.65:
+                    intent = "answer_question"
+                _add_plan(bot.player_id, intent, idx + 1, "answering neutral meeting question")
+
+    # -----------------------------------------------------------------------
+    # 4. General "who is infected / who sus" question.
     # -----------------------------------------------------------------------
     elif classification == "asks_who_infected":
         responder_count = random.choices([1, 2, 3], weights=[45, 40, 15])[0]
@@ -770,7 +824,7 @@ def select_responders(
                 _add_plan(bot.player_id, intent, idx + 1, "answering general suspicion question")
 
     # -----------------------------------------------------------------------
-    # 4. Vote mentioned but target unclear.
+    # 5. Vote mentioned but target unclear.
     # -----------------------------------------------------------------------
     elif _VOTE_PATTERN.search(msg):
         if force_response or random.random() < 0.75:
@@ -783,7 +837,7 @@ def select_responders(
             )
 
     # -----------------------------------------------------------------------
-    # 5. Insult without clear target.
+    # 6. Insult without clear target.
     # -----------------------------------------------------------------------
     elif classification == "insult":
         if force_response or random.random() < 0.55:
@@ -791,7 +845,7 @@ def select_responders(
             _add_plan(bot.player_id, "calm_down_short", 1, "meeting insult/noise")
 
     # -----------------------------------------------------------------------
-    # 6. Generic message.
+    # 7. Generic message.
     # -----------------------------------------------------------------------
     else:
         if force_response:
@@ -837,10 +891,61 @@ def select_responders(
 
     plans.sort(key=lambda p: p.priority)
 
+    diversity_applied = False
+    used_intents: set[str] = set()
+
+    def _diverse_intent_options(personality: str | None, classification_name: str, position: int, direct_target: bool) -> list[str]:
+        normalized = _normalize_personality(personality) or "crowd_follower"
+        if direct_target:
+            if normalized == "deflector":
+                return ["deflect", "deny", "defend_self", "disagree", "third_party_opinion"]
+            if normalized == "framer":
+                return ["accuse_other", "pile_on", "ask_question", "third_party_opinion", "disagree"]
+            if normalized == "quiet":
+                return ["defend_self", "deny", "ask_question", "confused", "stay_out"]
+            if normalized == "panicker":
+                return ["defend_self", "calm_down_short", "deny", "ask_question", "confused"]
+            return ["defend_self", "deny", "disagree", "ask_question", "third_party_opinion"]
+
+        if position == 1:
+            if classification_name in ("vote_bot", "direct_accusation", "called_bot_or_real"):
+                return ["deflect", "ask_question", "third_party_opinion", "agree", "disagree"]
+            if classification_name == "question_prompt":
+                return ["answer_question", "third_party_opinion", "agree", "ask_question", "confused"]
+            if normalized == "framer":
+                return ["accuse_other", "pile_on", "third_party_opinion", "ask_question", "disagree"]
+            if normalized == "deflector":
+                return ["deflect", "deny", "third_party_opinion", "ask_question", "agree"]
+            if normalized == "quiet":
+                return ["confused", "calm_down_short", "stay_out", "ask_question", "third_party_opinion"]
+            if normalized == "panicker":
+                return ["calm_down_short", "confused", "ask_question", "defend_self", "deny"]
+            return ["third_party_opinion", "agree", "disagree", "ask_question", "confused"]
+
+        return ["confused", "calm_down_short", "stay_out", "third_party_opinion", "ask_question", "agree"]
+
+    for index, plan in enumerate(plans):
+        bot = _bot_by_id(plan.botId)
+        if index == 0:
+            used_intents.add(plan.intent)
+            continue
+
+        options = _diverse_intent_options(bot.personality if bot else None, classification, index, plan.isDirectTarget)
+        if plan.intent in used_intents or (classification in ("vote_bot", "direct_accusation") and plan.intent == "ask_question"):
+            for option in options:
+                if option not in used_intents and option != plan.intent:
+                    original_intent = plan.intent
+                    plan.intent = option
+                    plan.reason = f"{plan.reason} | diversified from {original_intent}"
+                    diversity_applied = True
+                    break
+        used_intents.add(plan.intent)
+
     debug_info["selectedResponders"] = [p.botId for p in plans]
     debug_info["selectionReasons"].extend(
         [f"{p.botId}: {p.reason} -> {p.intent}" for p in plans]
     )
+    debug_info["diversityApplied"] = diversity_applied
 
     return plans, debug_info
 
@@ -1402,6 +1507,34 @@ def generate_human_fallback(
     # -----------------------------------------------------------------------
     if intent == "ask_question":
         return [_safe_choice(formatted_questions)]
+
+    # -----------------------------------------------------------------------
+    # Answer a neutral meeting question with a short believable claim.
+    # -----------------------------------------------------------------------
+    if intent == "answer_question":
+        answer_pool = _format_pool(
+            [
+                "i was at {room}",
+                "task bar barely moved on my side",
+                "i only saw people pass by",
+                "i think the wave was just now",
+                "i was doing tasks in {room}",
+                "someone was near {room} before meeting",
+                "i didnt see the full thing",
+                "i was with {other} for a bit",
+                "i was around {room} most of the round",
+                "that happened right after i left {room}",
+            ],
+            room=room,
+            other=other,
+            target=target,
+            bot=bot_id,
+        )
+        count = random.choices([1, 2], weights=[72, 28])[0]
+        replies = _unique_sample(answer_pool, count)
+        if count >= 2 and random.random() < 0.45:
+            replies[-1] = _safe_choice(formatted_third + formatted_questions)
+        return _dedupe_keep_order(replies)[:2]
 
     # -----------------------------------------------------------------------
     # Confused/quiet bot.

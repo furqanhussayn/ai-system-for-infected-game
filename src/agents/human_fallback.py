@@ -15,6 +15,14 @@ _RESPONSE_POOLS: dict[str, list[str]] = {
         "idk stop asking like i know",
         "player 3 maybe idk",
     ],
+    "question_prompt": [
+        "i was at electrical when that happened",
+        "task progress looked kinda low on my side",
+        "wave just hit i think",
+        "i only saw someone pass by hub",
+        "i was doing tasks in storage",
+        "that happened right after i left reactor",
+    ],
     "called_bot_or_real": [
         "bro what?? how do i sound like a bot",
         "ur saying that cuz i typed normal??",
@@ -81,6 +89,8 @@ _ULTRA_SAFE = ("idk tbh", "bro what??")
 def _pick_count(classification: str) -> int:
     if classification == "generic":
         return random.choices([0, 1], weights=[15, 85])[0]
+    if classification == "question_prompt":
+        return random.choices([1, 2], weights=[70, 30])[0]
     if classification == "asks_who_infected":
         return 1
     if classification == "insult":

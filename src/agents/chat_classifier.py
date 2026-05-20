@@ -9,6 +9,35 @@ def classify_latest_message(message: str, bot_id: str) -> str:
     bot_num = bot_id.split("_")[-1].lower() if "_" in bot_id else bot_id.lower()
     targets_bot = bot_lower in msg or f"player {bot_num}" in msg or f"p{bot_num}" in msg
 
+    question_prompt_phrases = (
+        "what happened",
+        "what's happening",
+        "whats happening",
+        "what is happening",
+        "what plan",
+        "what's the plan",
+        "whats the plan",
+        "task progress",
+        "how many tasks",
+        "what wave",
+        "which wave",
+        "who saw",
+        "where exactly",
+        "what was the route",
+        "what room",
+        "what room was",
+        "did anyone see",
+        "anyone see",
+        "can someone explain",
+        "who was near",
+        "what did u see",
+        "what did you see",
+        "what were you doing",
+        "where were you",
+    )
+    if "?" in msg or any(p in msg for p in question_prompt_phrases):
+        return "question_prompt"
+
     vote_phrases = (
         "vote player 2",
         "vote him",

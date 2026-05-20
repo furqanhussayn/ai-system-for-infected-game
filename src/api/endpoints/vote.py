@@ -51,18 +51,49 @@ def _rule_based_vote(req: VoteRequest) -> tuple[str | None, str]:
 @router.post("", response_model=VoteResponse)
 async def vote(req: VoteRequest):
     agent_vote = await decide_vote_with_agent(req)
-    if agent_vote is not None:
+    agent_llm_used = bool(agent_vote and agent_vote.get("llmDebug", {}).get("llmUsed"))
+    if agent_vote is not None and agent_llm_used:
+        llm_debug = agent_vote.get("llmDebug", {}) or {}
+        trace_text = " | ".join(
+            part
+            for part in [
+                f"reason={agent_vote['reason']}",
+                f"llm_attempted={llm_debug.get('llmAttempted', False)}",
+                f"llm_used={llm_debug.get('llmUsed', False)}",
+                f"fallback_reason={llm_debug.get('fallbackReason', '')}",
+                f"provider={llm_debug.get('provider', '')}",
+                f"model={llm_debug.get('model', '')}",
+                f"stage={llm_debug.get('stage', '')}",
+                f"statusCode={llm_debug.get('statusCode', '')}",
+                f"latencyMs={llm_debug.get('latencyMs', 0)}",
+            ]
+            if part is not None
+        )
         add_trace(
             req.matchId,
             req.botId,
             "vote",
             agent_vote["voteTarget"],
-            agent_vote["reason"],
+            trace_text,
             "/vote:agent",
             input_data=req.model_dump(by_alias=True),
-            output_data={"botId": req.botId, "voteTarget": agent_vote["voteTarget"], "reason": agent_vote["reason"], "trace": agent_vote["reason"]},
+            output_data={"botId": req.botId, "voteTarget": agent_vote["voteTarget"], "reason": agent_vote["reason"], "trace": trace_text},
         )
-        return {"botId": req.botId, "voteTarget": agent_vote["voteTarget"], "reason": agent_vote["reason"], "trace": agent_vote["reason"]}
+        return {"botId": req.botId, "voteTarget": agent_vote["voteTarget"], "reason": agent_vote["reason"], "trace": trace_text}
+
+    if agent_vote is not None and not agent_llm_used:
+        llm_debug = agent_vote.get("llmDebug", {}) or {}
+        failure_reason = llm_debug.get("fallbackReason") or agent_vote.get("reason", "llm_failed")
+        add_trace(
+            req.matchId,
+            req.botId,
+            "agent_vote_failed",
+            "rules_fallback",
+            f"fallback_reason={failure_reason} | stage={llm_debug.get('stage', '')} | statusCode={llm_debug.get('statusCode', '')}",
+            "/vote:agent_validation_failed",
+            input_data=req.model_dump(by_alias=True),
+            output_data={"botId": req.botId, "voteTarget": agent_vote.get("voteTarget"), "reason": agent_vote.get("reason"), "trace": failure_reason},
+        )
 
     vote_target, reason = _rule_based_vote(req)
     trace_source = "/vote:rules_fallback" if config.AI_MODE == "agent" else "/vote"
