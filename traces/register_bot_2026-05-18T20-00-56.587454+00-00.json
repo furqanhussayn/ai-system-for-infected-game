@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:00:56.587454+00:00", "matchId": "AGENT_DECIDE_FALLBACK", "botId": "player_2", "action": "register_bot", "decision": "panicker | stealth_fake_task", "trace": "Registered bot with personality panicker and early stealth_fake_task behavior.", "source": "/register_bot"}

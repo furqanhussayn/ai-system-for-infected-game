@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:05.349332+00:00", "matchId": "RESPOND_ROOM_VALID", "botId": "player_2", "action": "respond", "decision": "nah bro | i was doing wires", "trace": "classification=direct_accusation | message_count=2 | llm_used=True | fallback_used=False | delaysMs=[1090, 1441]", "source": "/respond"}

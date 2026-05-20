@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:07:48.406334+00:00", "matchId": "CHAT_LAB", "botId": "player_2", "action": "chat_lab_respond", "decision": "[]", "trace": "classification=generic | message_count=0 | llm_used=False | fallback_used=False | delaysMs=[] | Bot stayed silent to avoid over-talking.", "source": "/respond"}

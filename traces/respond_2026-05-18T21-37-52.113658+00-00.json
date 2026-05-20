@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:52.113658+00:00", "matchId": "FRESH_5aa84c49", "botId": "player_2", "action": "respond", "decision": "bro i didnt even do anything | player 1 has to be deflecting", "trace": "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1483, 1351]", "source": "/respond"}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:25:24.500570+00:00", "matchId": "FRESH_11d6ce9d", "botId": "player_2", "action": "respond", "decision": "silence", "trace": "classification=generic | message_count=0 | llm_used=False | fallback_used=False | delaysMs=[] | Bot stayed silent to avoid over-talking.", "source": "/respond"}

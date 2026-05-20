@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:22.743928+00:00", "matchId": "FRESH_24b9b677", "botId": "player_2", "action": "respond", "decision": "WAIT why me?? | wtf yall | i was literally at wires | nah this is rigged", "trace": "classification=vote_bot | message_count=4 | llm_used=False | fallback_used=True | delaysMs=[1255, 819, 1582, 1385]", "source": "/respond"}

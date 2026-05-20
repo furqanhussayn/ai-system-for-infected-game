@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:09.738316+00:00", "matchId": "DELAYS_FIELD_TEST", "botId": "player_2", "action": "respond", "decision": "ur just blaming me for no reason", "trace": "classification=direct_accusation | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1576]", "source": "/respond"}

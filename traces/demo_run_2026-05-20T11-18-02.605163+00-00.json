@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-20T11:18:02.605163+00:00", "ts": "2026-05-20T11:18:02.605180+00:00", "matchId": "DEMO_GROQ_SAFE", "botId": "player_2", "action": "vote", "eventType": "vote", "decision": "player_1", "trace": "No clear accuser; picked random human.", "input": "player_1", "output": "No clear accuser; picked random human.", "source": "/demo/run"}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:31:02.702621+00:00", "matchId": "FRESH_b2a8322b", "botId": "player_2", "action": "respond", "decision": "nah i was at wires", "trace": "classification=direct_accusation | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1607]", "source": "/respond"}

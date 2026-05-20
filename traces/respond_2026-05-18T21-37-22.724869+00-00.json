@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:22.724869+00:00", "matchId": "FRESH_0ce1a80d", "botId": "player_2", "action": "respond", "decision": "ur being weird rn", "trace": "classification=insult | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1905]", "source": "/respond"}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:25:09.142475+00:00", "matchId": "CHAT_LAB", "botId": "multi", "action": "chat_lab_multi", "decision": "[{\"sender\": \"player_2\", \"text\": \"lowkey i dont trust player 3\", \"delayMs\": 2836}]", "trace": "multi_bot | classification=generic | targeted=None | events=1 | plans=['player_2'] | player_2:agree:1:/respond", "source": "/chat_lab/send"}

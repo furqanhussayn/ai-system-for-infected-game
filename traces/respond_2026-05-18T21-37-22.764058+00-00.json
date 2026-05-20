@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:37:22.764058+00:00", "matchId": "FRESH_b049242c", "botId": "player_2", "action": "respond", "decision": "wtf i didnt even do anything | i was literally at wires", "trace": "classification=vote_bot | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1728, 1526]", "source": "/respond"}

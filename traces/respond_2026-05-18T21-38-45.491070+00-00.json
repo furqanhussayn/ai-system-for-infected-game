@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:38:45.491070+00:00", "matchId": "FRESH_473e9bef", "botId": "player_2", "action": "respond", "decision": "bro yall throwing so hard | wtf yall", "trace": "classification=vote_bot | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1715, 820]", "source": "/respond"}

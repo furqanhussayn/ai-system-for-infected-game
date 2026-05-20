@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-19T21:23:40.964398+00:00", "ts": "2026-05-19T21:23:40.964407+00:00", "matchId": "DEMO_ROOM", "botId": "player_2", "action": "vote", "eventType": "vote", "decision": "player_1", "trace": "No clear accuser; picked random human.", "input": "player_1", "output": "No clear accuser; picked random human.", "source": "/demo/run"}

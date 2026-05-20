@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from src.api.endpoints import register_bot, decide_action, respond, vote, trace, demo, llm_status
+from src.api.endpoints import register_bot, unregister_bot, decide_action, respond, vote, trace, demo, llm_status, chat_lab
+from src.core import config
 
 app = FastAPI(title="Infected - Team A Antigravity API")
 
@@ -11,6 +12,7 @@ app.add_middleware(
 )
 
 app.include_router(register_bot.router, prefix="/register_bot", tags=["register"])
+app.include_router(unregister_bot.router, prefix="/unregister_bot", tags=["unregister"])
 app.include_router(decide_action.router, prefix="/decide_action", tags=["decide"])
 app.include_router(respond.router, prefix="/respond", tags=["respond"])
 app.include_router(vote.router, prefix="/vote", tags=["vote"])
@@ -19,11 +21,19 @@ app.include_router(trace.viewer_router, tags=["trace-viewer"])
 app.include_router(trace.debug_router, tags=["trace-debug"])
 app.include_router(llm_status.router)
 app.include_router(demo.router, tags=["demo"])
+app.include_router(chat_lab.router, tags=["chat-lab"])
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "infected-ai-backend"}
+    return {
+        "status": "ok",
+        "service": "infected-ai-backend",
+        "contractVersion": "v4",
+        "aiMode": config.AI_MODE,
+        "llmProvider": config.LLM_PROVIDER,
+        "firebaseConfigured": config.FIREBASE_CONFIGURED,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -116,6 +126,7 @@ async def landing_page():
                         <button class="demo-button" type="submit">▶ Run Agent Demo</button>
                     </form>
                     <div class="links">
+                        <a href="/chat_lab">🎭 Chat Lab</a>
                         <a href="/trace_viewer/DEMO_ROOM">View Current Trace</a>
                         <a href="/trace/DEMO_ROOM">Raw Trace JSON</a>
                         <a href="/docs">Swagger Docs</a>

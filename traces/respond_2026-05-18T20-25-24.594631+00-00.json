@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:25:24.594631+00:00", "matchId": "GROQ_WAY_OUT", "botId": "player_2", "action": "respond", "decision": "silence", "trace": "classification=asks_who_infected | message_count=0 | llm_used=False | fallback_used=False | delaysMs=[] | Bot stayed silent to avoid over-talking.", "source": "/respond"}

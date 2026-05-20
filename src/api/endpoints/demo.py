@@ -15,6 +15,8 @@ from src.core.state import clear_match
 
 router = APIRouter()
 
+# Demo sample player IDs are sample-only. Production Unity calls pass real match state.
+
 
 async def _call_register(match_id: str):
     payload = {
@@ -79,8 +81,15 @@ async def _call_respond(match_id: str):
         "alivePlayers": ["player_1", "player_2", "player_3", "player_4"],
         "infectedPlayers": ["player_2"],
     }
-    messages, trace_text, _ = await build_response_payload(RespondRequest(**payload), use_llm=False)
-    return {"botId": payload["botId"], "messages": messages, "trace": trace_text}
+    messages, trace_text, _, delays_ms = await build_response_payload(
+        RespondRequest(**payload), use_llm=False
+    )
+    return {
+        "botId": payload["botId"],
+        "messages": messages,
+        "trace": trace_text,
+        "delaysMs": delays_ms,
+    }
 
 
 def _rule_based_vote_payload(match_id: str):
@@ -215,6 +224,7 @@ def _has_agent_key() -> bool:
 async def _run_agent_demo(match_id: str):
     steps = []
 
+    clear_traces(match_id)
     register_result = await _call_register(match_id)
     steps.append({"step": "register_bot", "result": register_result})
 
@@ -254,56 +264,6 @@ async def _run_agent_demo(match_id: str):
         bot_room="Exit Gate",
     )
     steps.append({"step": "final_hunt_decide_action", "result": final_decision})
-
-    clear_traces(match_id)
-    add_trace(
-        match_id,
-        "player_2",
-        "register_bot",
-        f"{register_result.get('personality')} | {register_result.get('behaviorMode')}",
-        register_result.get("trace", ""),
-        "/register_bot",
-    )
-    add_trace(
-        match_id,
-        "player_2",
-        "agent_decide_action_early",
-        early_decision.get("behaviorMode"),
-        early_decision.get("trace", ""),
-        "/decide_action:agent",
-    )
-    add_trace(
-        match_id,
-        "player_2",
-        "agent_respond",
-        " | ".join(respond_messages) if respond_messages else "silence",
-        respond_result.get("trace", "") if isinstance(respond_result, dict) else "",
-        "/respond:agent",
-    )
-    add_trace(
-        match_id,
-        "player_2",
-        "agent_vote",
-        vote_result.get("voteTarget"),
-        vote_result.get("trace", ""),
-        "/vote:agent",
-    )
-    add_trace(
-        match_id,
-        "player_2",
-        "agent_decide_action_late",
-        late_decision.get("behaviorMode"),
-        late_decision.get("trace", ""),
-        "/decide_action:agent",
-    )
-    add_trace(
-        match_id,
-        "player_2",
-        "agent_final_hunt",
-        final_decision.get("behaviorMode"),
-        final_decision.get("trace", ""),
-        "/decide_action:agent",
-    )
 
     return {
         "matchId": match_id,

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:38:45.479347+00:00", "matchId": "FRESH_a9ac7a04", "botId": "player_2", "action": "respond", "decision": "bro what?? how do i sound like a bot", "trace": "classification=called_bot_or_real | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[2301]", "source": "/respond"}

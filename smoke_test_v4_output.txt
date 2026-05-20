@@ -1,0 +1,73 @@
+== /health ==
+{
+    "status":  "ok",
+    "service":  "infected-ai-backend",
+    "contractVersion":  "v4",
+    "aiMode":  "agent",
+    "llmProvider":  "groq",
+    "firebaseConfigured":  false
+}
+== /register_bot ==
+{
+    "ok":  true,
+    "botId":  "player_2",
+    "personality":  "deflector",
+    "behaviorMode":  "stealth_fake_task",
+    "trace":  "Registered bot with personality deflector and early stealth_fake_task behavior."
+}
+== /decide_action ==
+{
+    "botId":  "player_2",
+    "behaviorMode":  "stalk",
+    "targetRoom":  "CentralHub",
+    "targetPlayer":  "player_3",
+    "shouldChase":  false,
+    "nextDecisionInSeconds":  21,
+    "trace":  "Mid game: stalk nearest human but avoid obvious chase."
+}
+== /respond ==
+{
+    "botId":  "player_2",
+    "respond":  true,
+    "messages":  [
+                     "why u pushing me so hard??"
+                 ],
+    "typingDelaySeconds":  2.89,
+    "secondMessageDelaySeconds":  0.0,
+    "trace":  "classification=direct_accusation | message_count=1 | llm_used=False | fallback_used=True | delaysMs=[1782]",
+    "delaysMs":  [
+                     1782
+                 ]
+}
+== /vote ==
+{
+    "botId":  "player_2",
+    "voteTarget":  "player_1",
+    "reason":  "random vote",
+    "trace":  "random vote"
+}
+== /unregister_bot ==
+{
+    "ok":  true,
+    "botId":  "player_2",
+    "trace":  "Bot player_2 unregistered after antidote_cure."
+}
+== /trace/ROOM123 ==
+{
+    "matchId":  "ROOM123",
+    "count":  1,
+    "traces":  [
+                   {
+                       "ts":  "2026-05-19T23:10:44.213702+00:00",
+                       "timestamp":  "2026-05-19T23:10:44.213693+00:00",
+                       "action":  "unregister_bot",
+                       "eventType":  "unregister_bot",
+                       "matchId":  "ROOM123",
+                       "botId":  "player_2",
+                       "input":  "{\"matchId\": \"ROOM123\", \"botId\": \"player_2\", \"reason\": \"antidote_cure\"}",
+                       "output":  "{\"ok\": true, \"botId\": \"player_2\", \"trace\": \"Bot player_2 unregistered after antidote_cure.\"}",
+                       "trace":  "Bot player_2 unregistered after antidote_cure.",
+                       "source":  "/unregister_bot"
+                   }
+               ]
+}

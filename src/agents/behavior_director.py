@@ -19,7 +19,7 @@ class BehaviorDirector:
         if infected >= 3 and infected > (len(state.get("alive", [])) // 2):
             mode = "aggressive_chase"
         elif wave > 2:
-            mode = "stalk_mode"
+            mode = "stalk"
         else:
             mode = "stealth_fake_task"
         targetRoom = None

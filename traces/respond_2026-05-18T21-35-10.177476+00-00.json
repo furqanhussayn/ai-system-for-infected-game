@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T21:35:10.177476+00:00", "matchId": "FRESH_8d5b3205", "botId": "player_2", "action": "respond", "decision": "nah i was at wires | player 1 has to be deflecting", "trace": "classification=direct_accusation | message_count=2 | llm_used=False | fallback_used=True | delaysMs=[1382, 1539]", "source": "/respond"}
